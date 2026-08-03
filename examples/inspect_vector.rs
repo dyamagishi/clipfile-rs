@@ -1,4 +1,4 @@
-//! Resolves one layer's vector references and reads their bounded opaque bodies.
+//! Reads one layer's validated vector strokes, styles, and points.
 
 use std::{env, fs::File};
 
@@ -24,23 +24,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // The database returns typed ownership metadata without interpreting vector bytes.
+    // The database resolves ownership; each external body is then parsed separately.
     let limits = Limits::default();
     let mut clip = ClipFile::open(File::open(input)?)?;
     let database = clip.open_database()?;
     let sources = database.vector_data_sources(layer_id, limits)?;
     println!("layer {layer_id}: {} vector object(s)", sources.len());
 
-    // Each external body is resolved through the validated SQLite external index.
+    // Unknown layouts remain available through the raw accessors.
     for source in &sources {
-        let bytes = clip.read_vector_data(&database, source, limits)?;
+        let vector = clip.read_vector(&database, source, limits)?;
         println!(
-            "vector object {}: canvas {}, layer {}, {} raw bytes",
+            "vector object {}: canvas {}, layer {}, {} stroke(s), {} raw bytes",
             source.id(),
             source.canvas_id(),
             source.layer_id(),
-            bytes.len()
+            vector.stroke_count(),
+            vector.raw().len()
         );
+        for (stroke_index, stroke) in vector.strokes().enumerate() {
+            let layout = stroke.layout();
+            println!(
+                "  stroke {stroke_index}: {:?} {:?}, {} point(s), layout {}/{}/{}/{}, supported={}",
+                stroke.kind(),
+                stroke.curve_kind(),
+                stroke.point_count(),
+                layout.header_size(),
+                layout.point_section_size(),
+                layout.point_size(),
+                layout.default_point_size(),
+                stroke.is_semantically_supported()
+            );
+            if let Some(style) = stroke.style() {
+                println!(
+                    "    style: color #{:02x}{:02x}{:02x}, opacity {}, brush {}, radius {:?}",
+                    style.main_color().red_8bit(),
+                    style.main_color().green_8bit(),
+                    style.main_color().blue_8bit(),
+                    style.opacity(),
+                    style.brush_id(),
+                    style.brush_radius()
+                );
+            }
+            for (point_index, point) in stroke.points().enumerate() {
+                let controls = point
+                    .control_points()
+                    .map(|position| (position.x(), position.y()))
+                    .collect::<Vec<_>>();
+                println!(
+                    "    point {point_index}: position={:?}, width_factor={:?}, opacity_factor={:?}, controls={controls:?}",
+                    point
+                        .position()
+                        .map(|position| (position.x(), position.y())),
+                    point.width_factor(),
+                    point.opacity_factor()
+                );
+            }
+        }
     }
     Ok(())
 }

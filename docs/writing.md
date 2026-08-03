@@ -196,7 +196,7 @@ writer.write_to_path("new-output.clip")?;
 
 vector stroke全体を新規生成するserializerは未確定である。`replace_vector_data_body` は、`Database::vector_data_sources` が返した型付き参照が編集用DBでも同じrowとidentifierを指すことを検証してから、完全な外部本体を置換する。これはstroke単位のsemantic encoderではなく、意図的に明示したopaque境界である。
 
-既存bodyが検証済みの92-byte stroke header / 88-byte point layoutだけで構成される場合、`translate_vector_data` は全point位置とstroke/point bounding boxを整数canvas単位で平行移動する。brush、pressure、opacity、flags、未知byteは保持し、別layoutは変更前に拒否する。
+既存bodyが検証済みの92-byte stroke header / 88-byte point layoutだけで構成される場合、`translate_vector_data` は全point位置とstroke/point bounding boxを整数canvas単位で平行移動する。brush、width/opacity factor、flags、未知byteは保持し、別layoutは変更前に拒否する。
 
 ```rust,no_run
 # use std::fs::File;
@@ -215,7 +215,7 @@ writer.write_to_path("new-output.clip")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-同じ検証済みlayoutでは、stroke単位の保守的な追加・削除にも対応する。`clone_vector_stroke` は選択した92-byte headerと全88-byte point recordをそのまま複製し、point位置とstroke/point bounding boxだけを整数canvas単位で平行移動して同じbodyの末尾へ追加する。brush、pressure、opacity、flag、未知fieldは保持する。
+同じ検証済みlayoutでは、stroke単位の保守的な追加・削除にも対応する。`clone_vector_stroke` は選択した92-byte headerと全88-byte point recordをそのまま複製し、point位置とstroke/point bounding boxだけを整数canvas単位で平行移動して同じbodyの末尾へ追加する。brush、width/opacity factor、flag、未知fieldは保持する。
 
 `remove_vector_stroke` は選択record以外のbyteを保持し、最後のstrokeを削除した場合は空の外部bodyにする。いずれの操作も別データとして保存されたrender cacheやpreviewを再生成しない。
 

@@ -134,6 +134,12 @@ pub enum Error {
         /// Human-readable details.
         reason: String,
     },
+    /// A vector-data body is structurally inconsistent or contains invalid values.
+    #[cfg(feature = "sqlite")]
+    InvalidVectorData {
+        /// Human-readable details.
+        reason: String,
+    },
     /// Raster metadata or decoded pixels are structurally inconsistent.
     #[cfg(any(feature = "raster", feature = "write"))]
     InvalidRaster {
@@ -249,6 +255,10 @@ impl fmt::Display for Error {
             #[cfg(feature = "sqlite")]
             Self::InvalidRuler { reason } => {
                 write!(formatter, "invalid ruler data: {reason}")
+            }
+            #[cfg(feature = "sqlite")]
+            Self::InvalidVectorData { reason } => {
+                write!(formatter, "invalid vector data: {reason}")
             }
             #[cfg(any(feature = "raster", feature = "write"))]
             Self::InvalidRaster { reason } => write!(formatter, "invalid raster data: {reason}"),

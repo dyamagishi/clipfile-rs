@@ -1,6 +1,6 @@
 # 公開APIレベル監査
 
-最終監査日: 2026-07-25
+最終監査日: 2026-08-04
 
 ## 方針
 
@@ -25,7 +25,7 @@
 | raster | `layer_raster_source` / `decode_raster` / `RasterImage::from_pixels` / image-rs変換 | native tile、未知packingの調査 |
 | raster write | `replace_layer_raster` / `replace_layer_mask` / template clone | checksum modeやraw row-major pixelの明示指定 |
 | text | `text_layer`とtyped text write | 未解釈style / layout attributeの保持 |
-| vector | `vector_data_sources`と検証済みstroke操作 | 未解釈brush / stroke layoutの調査・body保持 |
+| vector | `vector_data_sources` / `read_vector` / `VectorStroke` / `VectorPoint`と検証済みstroke操作 | 未知layout、完全なbrush metadata、raw bodyの調査・保持 |
 | animation | `read_animation` / `read_animation_for_timeline`とtyped write | 未知Track kind / value type / mixer metadataの保持 |
 | time-lapse | `time_lapse` / `read_time_lapse_frame_index` | 未解釈header word / FourCCの保持 |
 | `.cmc` | `CmcFile` / page tree / `page_path` | 未知link formのraw保持 |
@@ -34,11 +34,15 @@
 
 現時点で、意味が解明済みなのにSQLまたはbinary parsingでしか到達できない領域はない。複数layerを対象にするtext、vector、camera、rasterは、`Document::layers()`で所有layerを列挙して各typed accessorへ渡せる。
 
-## 意図的に低レベルなexample
+## ExampleのAPI境界
+
+`inspect_vector.rs`は検証済みgeometry/styleと未知layoutのraw fallbackを示す。`clipfile-svg` crateの`export_vector_svg.rs`は公開vector APIだけを使う正式adapter例であり、近似を`SvgExportReport`へ集計してstderrへ明示する。SVG固有の型とpolicyはcore crateへ混ぜない。
+
+次は意図的に低レベルなexampleである。
 
 - `inspect.rs`のbase / `--deep` / `--database`: container、external body、SQLite構造の診断
 - `invert_first_tile.rs`: native planar tileとblock writerの説明
-- `inspect_vector.rs` / `edit_vector_body.rs`: 未解明vector bodyの上限付きread / 完全置換
+- `edit_vector_body.rs`: format研究用のopaque vector body完全置換
 - `export_preview.rs`: 検証済みencoded previewをbyte変更せず抽出
 
 これらはsemantic編集の推奨経路ではない。各ファイルと`examples/README.md`で目的を明記する。

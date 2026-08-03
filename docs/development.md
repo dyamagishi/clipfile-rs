@@ -2,8 +2,7 @@
 
 ## 現在の構成
 
-- crate名: `clipfile`
-- version: `1.0.0`
+- workspace crate: `clipfile 1.1.0`、`clipfile-svg 0.1.0`
 - edition: Rust 2024
 - MSRV: Rust 1.85
 - license: MIT
@@ -21,10 +20,11 @@ CIはLinux、Windows、macOSのstableとLinuxのMSRVでテストし、fmt、Clip
 
 ```console
 cargo fmt --all --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features --locked
-cargo doc --all-features --no-deps
-cargo package --locked
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --all-features --locked
+cargo doc --workspace --all-features --no-deps
+cargo package -p clipfile --locked
+cargo package -p clipfile-svg --locked
 ```
 
 ローカルサンプルを検証する場合:
@@ -49,24 +49,22 @@ cargo run --features raster --example inspect -- tester/data/example.clip --rast
 
 公開リポジトリは `https://github.com/Aodaruma/clipfile-rs` としてmanifestへ設定済みである。
 
-2026-07-22時点のcrates.io indexでは同名crateを確認できなかったが、crate名は予約されていない。初回公開直前に再確認する。
-
-crates.ioのTrusted Publishingは初回リリースには利用できないため、`0.1.0`だけはmaintainerがローカルから公開する。
+`clipfile-svg`は`clipfile`の公開APIへ依存するため、両方を同時releaseする場合は必ずcoreを先に公開し、crates.io indexへの反映後にadapterを検証・公開する。
 
 1. crate名とmanifest内の公開情報が最新であることを確認する。
 2. `CHANGELOG.md` の `[Unreleased]` を対象versionへ移す。
 3. `cargo package --list` で、サンプルや `tester/` が含まれないことを確認する。
 4. 上記のローカル検証とCIをすべて通す。
-5. `cargo publish --dry-run --locked` を実行する。
+5. `cargo publish --dry-run --locked -p <package>` を実行する。
 6. crates.ioへGitHubアカウントでログインし、メールアドレスを検証する。
 7. crates.ioで発行したAPI tokenを`cargo login`へ入力する。tokenをリポジトリやGitHub Actions secretへ保存しない。
-8. `cargo publish --locked` を実行する。この操作は取り消せず、同じversionを上書きできない。
+8. `cargo publish --locked -p <package>` を実行する。この操作は取り消せず、同じversionを上書きできない。
 9. crates.ioのcrate設定でTrusted Publisherを次のように登録する。
    - GitHub owner: `Aodaruma`
    - repository: `clipfile-rs`
    - workflow: `publish.yml`
    - environment: `release`
-10. 公開したcommitへ `v0.1.0` のような署名付きtagを作成してpushする。
+10. 公開したcommitへcoreは`v1.1.0`、adapterは`clipfile-svg-v0.1.0`形式の署名付きtagを作成してpushする。
 
 tagのversionは`Cargo.toml`と一致しなければならない。`.github/workflows/publish.yml`は、未公開versionをOIDCの短期tokenでcrates.ioへ公開し、GitHub Releaseを作成する。すでに手動公開済みのversionは再公開せず、GitHub Release作成だけを行う。
 

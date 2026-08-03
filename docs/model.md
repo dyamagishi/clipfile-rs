@@ -7,7 +7,7 @@
 - `Project`: 内部形式version、任意の作品名、主キャンバスID
 - `Canvas`: ID、単位、幅・高さ、解像度、ルート・現在レイヤーID
 - `CanvasPreview`: キャンバスID、形式値、寸法、エンコード済みプレビュー
-- `VectorDataSource`: ベクターデータ行、所有キャンバス・レイヤーID、不透明な外部ID
+- `VectorDataSource` / `VectorData` / `VectorStroke` / `VectorPoint`: ベクターデータ行、検証済みrecord境界、座標・曲線・style・point factor、lossless raw値
 - `RulerLayerData` / `Ruler`: ベクター定規参照、9種の特殊定規、曲線点・透視消失点chain
 - `TextLayerData` / `TextObjectData`: UTF-8本文、所有レイヤー、形式値、オブジェクト別の不透明な属性
 - `CorrectionLayerData` / `Correction`: 補正レイヤーの形式値、9種の型付きparameter、元の属性payload
@@ -64,9 +64,11 @@
 
 `Database::canvas_preview(canvas_id, limits)` は、指定キャンバスのプレビュー1件を読み取る。1件のエンコード済みサイズは `Limits::max_preview_bytes` で制限し、PNGシグネチャがある場合はSQLiteの幅・高さと先頭IHDRを照合する。未知の `ImageType` と非PNGデータは推測で捨てず、生の形式値・バイト列として返す。
 
-`Database::vector_data_sources(layer_id, limits)` は、`VectorObjectList.LayerId` が一致する行を列挙する。件数は `Limits::max_vector_objects` で制限する。各外部本体は `ClipFile::read_vector_data` で `Limits::max_vector_data_bytes` を適用して取得できる。現時点ではベクター本体の意味を解釈せず、`VectorDataSource` の所有情報と外部ID、および元バイト列を保持する。
+`Database::vector_data_sources(layer_id, limits)` は、`VectorObjectList.LayerId` が一致する行を列挙する。件数は `Limits::max_vector_objects` で制限する。`ClipFile::read_vector` は外部本体へ `Limits::max_vector_data_bytes` を適用し、stroke/point境界をchecked arithmeticで検証する。対応layoutでは有限な座標、source point側のBezier controls、stroke/point bounding box、curve・closed flag、lossless RGB、stroke opacity、brush ID/radius、frame fill style、point width/opacity factorを返す。stroke数は `max_vector_strokes`、全point数は `max_vector_points` で制限する。
 
-`Database::ruler_layers(limits)` はschema判定とSQLを内部へ隠し、定規を所有するlayerをID順に列挙・検証する。1 layerだけ必要な場合は `ruler_layer(layer_id, limits)` を使える。両APIとも `Layer.RulerVectorIndex` の所有layer・canvas、または `SpecialRulerManager` と各 `First*` / `NextIndex` chainを検証する。parallel、curve parallel、multiple curve、radial line、radial curve、concentric circle、guide、perspective、symmetryの9テーブルを型付きで返す。curve `PointData` はbig-endian header・件数・有限な座標・末尾境界を検証し、透視定規は消失点chainと `GuideNumber × GuideDataSize` を照合する。ベクター定規の線本体は既存の不透明なvector data APIから取得する。
+未知layoutも宣言境界が成立すれば `VectorData` に保持し、意味getterを `None` にする。raw body/header/point/flag/color wordは失わない。構造解析前のbyte列が必要な場合は `ClipFile::read_vector_data` を使える。width/opacity factorは保存効果を表すが、生のtablet pressureとは確認できていない。layout相関とSVG変換時の制約は[ベクターAPIガイド](vector.md)を参照する。
+
+`Database::ruler_layers(limits)` はschema判定とSQLを内部へ隠し、定規を所有するlayerをID順に列挙・検証する。1 layerだけ必要な場合は `ruler_layer(layer_id, limits)` を使える。両APIとも `Layer.RulerVectorIndex` の所有layer・canvas、または `SpecialRulerManager` と各 `First*` / `NextIndex` chainを検証する。parallel、curve parallel、multiple curve、radial line、radial curve、concentric circle、guide、perspective、symmetryの9テーブルを型付きで返す。curve `PointData` はbig-endian header・件数・有限な座標・末尾境界を検証し、透視定規は消失点chainと `GuideNumber × GuideDataSize` を照合する。ベクター定規の線本体は同じtyped vector APIから取得する。
 
 `Database::text_layer(layer_id, limits)` は、`TextLayerString` をUTF-8として検証し、対応する `TextLayerAttributes` と組にして返す。追加オブジェクトの配列は、4-byte little-endian長と本体の繰り返しとして境界を検証する。文字列と属性の件数一致を必須とし、総バイト数を `Limits::max_text_bytes`、オブジェクト数を `Limits::max_text_objects` で制限する。属性、`TextLayerAddAttributesV01` の元配列、version値は失わず保持する。write時のobject追加では、後者がprimaryも含む同形式の配列であることと各itemのparameter 50がmain属性のobject IDと一致することも検証する。
 
@@ -96,4 +98,4 @@
 
 `LayerType` はビットフラグとして複数用途を表し、`LayerComposite` にも将来値が追加され得る。このため `LayerKind` と `BlendMode` は閉じたenumにせず、`raw()` で元の整数を必ず返す。`BlendMode::known_name()` は未知値を明示するため `Option` を返す。`is_pixel()` などは、現在確認できたビットだけを判定する補助APIである。
 
-ベクターは外部本体への安全な到達、定規は表間参照と特殊定規parameterまで対応したが、ベクター線本体・制御点・ブラシ属性はまだ解釈しない。テキストは本文と属性レコードの境界まで対応したが、フォント・段落・変形属性は未解釈である。補正レイヤーは9種の属性parameter、2Dカメラはlayer snapshot・現在値・軸付きcurveまで対応した。タイムラプスはfull key frameとdelta patchを含む内部WebP frame索引まで対応したが、`GMIK` 側parameterは未解釈である。タイムラプスの実時間はファイルに存在しないため復元対象にしない。3Dの詳細BLOBも同様に未解釈である。これらは元のDBへ `Database::connection()` で読み取りアクセスできるが、安定した意味モデルとしては、最小差分コーパスで検証後に追加する。
+ベクターはstroke/point境界、座標、曲線controls、基本style、width/opacity factorまで型付きで読み、未知layoutと未解釈brush fieldをraw保持する。完全なbrush形状・texture、spline補間、生のtablet pressureは固定しない。テキストは本文と属性レコードの境界まで対応したが、フォント・段落・変形属性は未解釈である。補正レイヤーは9種の属性parameter、2Dカメラはlayer snapshot・現在値・軸付きcurveまで対応した。タイムラプスはfull key frameとdelta patchを含む内部WebP frame索引まで対応したが、`GMIK` 側parameterは未解釈である。タイムラプスの実時間はファイルに存在しないため復元対象にしない。3Dの詳細BLOBも同様に未解釈である。これらは元のDBへ `Database::connection()` で読み取りアクセスできるが、安定した意味モデルとしては、最小差分コーパスで検証後に追加する。

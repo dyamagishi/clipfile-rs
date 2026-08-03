@@ -13,7 +13,8 @@
 | [`inspect_corrections.rs`](inspect_corrections.rs) | `sqlite` | 補正レイヤーを列挙し、型付きparameterを読む | なし |
 | [`inspect_rulers.rs`](inspect_rulers.rs) | `sqlite` | 定規レイヤーと特殊定規kindを読む | なし |
 | [`inspect_text.rs`](inspect_text.rs) | `sqlite` | 1レイヤーのUTF-8本文と不透明属性を読む | なし |
-| [`inspect_vector.rs`](inspect_vector.rs) | `sqlite` | 1レイヤーのvector参照と上限付きraw bodyを読む | なし |
+| [`inspect_vector.rs`](inspect_vector.rs) | `sqlite` | 1レイヤーのvector geometry・styleとraw fallbackを読む | なし |
+| [`export_vector_svg.rs`](../crates/clipfile-svg/examples/export_vector_svg.rs) | `clipfile-svg` package | 1レイヤーのvector strokeをloss report付きでSVGへ逐次変換 | 新規SVG |
 | [`export_raster.rs`](export_raster.rs) | `image` | 1レイヤーの全tileをRGBA/Gray画像へ組み立てPNGへ変換する | 新規PNG |
 | [`inspect_animation.rs`](inspect_animation.rs) | `animation` | timeline、track、FCurve、cel選択を読む | なし |
 | [`inspect_timelapse.rs`](inspect_timelapse.rs) | `timelapse` | manager/record/blob chainと内部frame indexをstream検証 | なし |
@@ -87,11 +88,17 @@ cargo run --features sqlite --example inspect_rulers -- input.clip
 
 `inspect_corrections` と `inspect_rulers` はそれぞれ `Database::correction_layers` / `Database::ruler_layers` を使うため、利用側でschema判定やSQLを書く必要はない。候補layerの検出からpayload・所有関係・chainの検証までライブラリ内で行う。
 
-textとvectorは対象layer IDを指定する。text本文はUTF-8として復号されるが、style属性とvector bodyの意味はまだ不透明なため、exampleもbyte数までを安全に扱う。
+textとvectorは対象layer IDを指定する。text本文はUTF-8として復号される。vectorはraw bodyに加えて、検証済みstroke/point境界、座標、制御点、styleを型付きAPIから取得できる。
 
 ```console
 cargo run --features sqlite --example inspect_text -- input.clip 42
 cargo run --features sqlite --example inspect_vector -- input.clip 42
+```
+
+`export_vector_svg` は別packageの正式adapter `clipfile-svg` を使う。canvas寸法を `viewBox` にし、対象layerの全vector objectを1つの新規SVGへ逐次出力する。直線、二次Bezier、三次BezierはSVG pathへ直接写像する。CLIP splineはpolylineへ、点ごとの幅・不透明度は一定値へ近似する。brush形状・texture、sub color、frame fill、fallback値、未知strokeのskipは`SvgExportReport`で種類別に集計し、stderrへ表示する。既存出力は上書きしない。
+
+```console
+cargo run -p clipfile-svg --example export_vector_svg -- input.clip new-layer.svg 42
 ```
 
 ## Raster
@@ -225,9 +232,9 @@ write exampleはいずれも入力ファイルと既存出力を変更しない�
 - container / chunk / external body: `inspect`
 - SQLite schema / external index: `inspect --database`
 - project / canvas / layer / tree / preview: `inspect_document`, `export_preview`
-- CMC / correction / ruler / text / vector: 対応する `inspect_*`
+- CMC / correction / ruler / text / vector: 対応する `inspect_*`、`export_vector_svg`
 - raster assembly / native tile / layer image write: `export_raster`, `invert_first_tile`, `invert_raster`, `clone_raster_layer`
 - animation / time-lapse: `inspect_animation`, `edit_animation_cel`, `clone_animation_track`, `insert_animation_key`, `remove_animation_key`, `clone_image_cel_track`, `remove_animation_track`, `inspect_timelapse`
 - validated rewrite / text / vector: `rewrite`, `edit_text`, `add_text_object`, `remove_text_object`, `edit_vector_body`, `translate_vector`, `clone_vector_stroke`, `remove_vector_stroke`
 
-通常のsemantic exampleは公開APIが保証する境界を越えず、未解明のstyle、templateなしのvector brush/animation metadata、time-lapse、3Dデータを推測して生成しない。低レベルescape hatchの範囲と監査結果は [`../docs/api-level-audit.md`](../docs/api-level-audit.md) にまとめている。
+通常のsemantic exampleは公開APIが保証する境界を越えず、未解明のbrush shape/texture、templateなしのvector brush/animation metadata、time-lapse、3Dデータを推測して生成しない。低レベルescape hatchの範囲と監査結果は [`../docs/api-level-audit.md`](../docs/api-level-audit.md) にまとめている。

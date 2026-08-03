@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-04
+
+### Added
+
+- Lossless typed vector-data reading across observed variable header and point
+  record layouts, exposing geometry, curve controls, colors, brush sizing,
+  stroke opacity, point width/opacity factors, and raw forward-compatible
+  fields.
+- A separate workspace crate, `clipfile-svg`, with streaming `quick-xml`
+  output, configurable loss policies, and an aggregate approximation report
+  for splines, variable factors, brush rendering, colors, and frame fills.
+
 ## [1.0.0] - 2026-07-25
 
 ### Added
@@ -175,7 +187,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Optional offscreen metadata parsing, bounded zlib tile decoding, and raster assembly.
 - Project, canvas, layer, and cycle-checked layer-tree models.
 
-[Unreleased]: https://github.com/Aodaruma/clipfile-rs/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Aodaruma/clipfile-rs/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/Aodaruma/clipfile-rs/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Aodaruma/clipfile-rs/compare/v0.5.0...v1.0.0
 [0.5.0]: https://github.com/Aodaruma/clipfile-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Aodaruma/clipfile-rs/compare/v0.3.0...v0.4.0

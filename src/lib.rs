@@ -32,6 +32,8 @@ mod text;
 mod timelapse;
 #[cfg(feature = "sqlite")]
 mod vector;
+#[cfg(feature = "sqlite")]
+mod vector_semantics;
 #[cfg(feature = "write")]
 mod writer;
 
@@ -90,10 +92,14 @@ pub use text::{TextLayerData, TextObjectData};
 pub use timelapse::{
     TimeLapse, TimeLapseBlob, TimeLapseFrame, TimeLapseFrameKind, TimeLapseManager, TimeLapseRecord,
 };
-#[cfg(feature = "sqlite")]
-pub use vector::VectorDataSource;
 #[cfg(feature = "write")]
 pub use vector::VectorTranslationSummary;
+#[cfg(feature = "sqlite")]
+pub use vector::{
+    VectorBounds, VectorColor, VectorControlPoints, VectorCurveKind, VectorData, VectorDataSource,
+    VectorLayout, VectorPoint, VectorPointFactors, VectorPointFlags, VectorPoints, VectorPosition,
+    VectorStroke, VectorStrokeFlags, VectorStrokeKind, VectorStrokeStyle, VectorStrokes,
+};
 #[cfg(all(feature = "write", feature = "raster"))]
 pub use writer::RasterWriteSummary;
 #[cfg(feature = "write")]

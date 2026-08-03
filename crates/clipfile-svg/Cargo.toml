@@ -1,0 +1,24 @@
+[package]
+name = "clipfile-svg"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Loss-aware streaming SVG adapter for clipfile vector data"
+documentation = "https://docs.rs/clipfile-svg"
+homepage = "https://github.com/Aodaruma/clipfile-rs"
+repository = "https://github.com/Aodaruma/clipfile-rs"
+license = "MIT"
+readme = "README.md"
+keywords = ["clip-studio", "clip", "svg", "vector"]
+categories = ["encoding", "graphics", "multimedia::images"]
+publish = ["crates-io"]
+
+[dependencies]
+clipfile = { path = "../..", version = "1.1.0", features = ["sqlite"] }
+quick-xml = { version = "0.41.0", default-features = false }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"

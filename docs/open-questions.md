@@ -39,8 +39,8 @@
 
 - 状態: 補正レイヤーparameter、特殊定規metadata、2Dカメラは解明・実装済み、その他は部分的
 - 観測: `LayerType` は複数の数値を取り、サンプル間でスキーマ列にも差がある。匿名のベクターレイヤーでは `LayerType=0`、`VectorObjectList` 1行、40-byteの外部ID、268-byteの未分類外部本体を確認した。同レイヤーの描画Mipmapだけでは実際の線を復元できない例だった。匿名の単一テキストでは `LayerType=0`、`TextLayerType=0`、UTF-8本文BLOB、1,029-byteの属性BLOB、属性version 1を確認し、primary以外の文字列・属性配列はNULLだった。公開サンプルの補正レイヤー32件は `LayerType=4098` で、`FilterLayerInfo` kind 1～9をすべて末尾まで復号できた。定規サンプル18レイヤーではベクター定規参照8件と特殊manager 10件があり、9定規表の16定規と透視消失点chainを全件到達できた。
-- 現在の扱い: レイヤー種別の元の整数値を保持し、ベクターは外部本体まで上限付きで取得する。テキストはUTF-8本文とオブジェクト別属性の境界に加え、属性parameter envelopeとobject IDを検証し、安全なtemplate cloneでobjectを追加し、1 objectを残す範囲で削除できる。各style/layout属性の意味は不透明なバイト列として保持する。補正レイヤーは `Database::correction_layers` でSQLなしに所有layerを列挙し、9種の型付きparameterと元payloadを返す。未知kindはpayloadを保持する。定規は `Database::ruler_layers` でSQLなしに所有layerを列挙でき、`ruler_layer` と共通の所有関係・chain・curve点・guide長検証を行う。2Dカメラは `Database::camera_2d_layer` でsnapshot構造を検証する。
-- 次の調査: ベクター本体の線・制御点・ブラシ属性と、テキストのフォント・段落・変形属性を差分比較する。3Dも1種類ずつ含む最小コーパスを作成する。定規はcurve header 4語と透視guide BLOBの意味を差分比較する。
+- 現在の扱い: レイヤー種別の元の整数値を保持し、ベクターは検証済みstroke/point、座標、制御点、基本style、width/opacity factorを型付きで返し、未知layoutをraw保持する。テキストはUTF-8本文とオブジェクト別属性の境界に加え、属性parameter envelopeとobject IDを検証し、安全なtemplate cloneでobjectを追加し、1 objectを残す範囲で削除できる。各text style/layout属性の意味は不透明なバイト列として保持する。補正レイヤーは `Database::correction_layers` でSQLなしに所有layerを列挙し、9種の型付きparameterと元payloadを返す。未知kindはpayloadを保持する。定規は `Database::ruler_layers` でSQLなしに所有layerを列挙でき、`ruler_layer` と共通の所有関係・chain・curve点・guide長検証を行う。2Dカメラは `Database::camera_2d_layer` でsnapshot構造を検証する。
+- 次の調査: ベクターbrush形状・texture・spline補間・生のtablet pressureと、テキストのフォント・段落・変形属性を差分比較する。3Dも1種類ずつ含む最小コーパスを作成する。定規はcurve header 4語と透視guide BLOBの意味を差分比較する。
 
 ## テキスト属性のゼロ生成と座標
 
@@ -53,10 +53,10 @@
 
 ## ベクターstroke recordとbrush属性
 
-- 状態: 観測済み92-byte header / 88-byte point recordの境界・座標は解明済み、brush serializerは未解明
-- 観測: 複数stroke bodyをrecord境界まで連結して走査できる。既存recordの完全cloneを末尾へ追加したbody、座標とbounding boxだけを平行移動したclone、全strokeを削除した空bodyは、ローカルの匿名検証ファイルでアプリから開けることを確認した。header末尾の不透明4-byte値をclone元と同じまま重複させても、同じ検証条件では読込を拒否されなかった。
-- 現在の扱い: 対応layoutでは全point平行移動、既存strokeのtemplate clone、stroke削除を提供する。brush、pressure、opacity、flagを含む未知fieldはbyte-for-byte保持する。別layoutは変更前に拒否し、render cacheとpreviewは再生成しない。
-- 次の調査: brush種類・太さ・色・筆圧設定を1項目ずつ変えた差分からheader fieldを対応付け、templateなしのstroke/brush builderとcache再生成の可否を判断する。
+- 状態: 可変layoutのread model、座標・曲線・基本styleは実装済み、完全なbrush renderer/serializerは未解明
+- 観測: 2,757 stroke / 23,655 pointで、76/88/92/96-byte header、88/104/120-byte point、kind/curve flag相関を確認した。104/120-byte suffixは始点側pointに属する二次/三次Bezier controlである。main/sub RGB word、stroke opacity、base/effective brush ID、radius、frame fill style、point width/opacity factorの位置と値域を全件走査した。既存recordの完全cloneを末尾へ追加したbody、座標とbounding boxだけを平行移動したclone、全strokeを削除した空bodyは、ローカルの匿名検証ファイルでアプリから開けることを確認した。
+- 現在の扱い: `read_vector` は対応layoutの意味値を型付きで返し、未知layoutは境界だけ走査してraw保持する。point係数は効果からwidth/opacity factorと呼び、生のpressureとは断定しない。write側では92/88 layoutの全point平行移動、既存strokeのtemplate clone、stroke削除を提供する。未知fieldはbyte-for-byte保持し、render cacheとpreviewは再生成しない。
+- 次の調査: brush種類・形状・texture・混色と筆圧設定を1項目ずつ変え、brush IDの外部定義、spline補間、生pressureから各factorへの変換を確定する。templateなしのstroke/brush builderとcache再生成の可否も判断する。
 
 ## 1-bitラスターデータ
 

@@ -27,7 +27,8 @@ Implemented:
 - validated standalone `.cmc` page-management trees and safe page links; and
 - high-level project, canvas, layer, and validated layer-tree models; and
 - bounded `CanvasPreview` PNG extraction; and
-- bounded retrieval of opaque vector-layer external data; and
+- bounded, lossless vector stroke/point parsing with coordinates, Bezier
+  controls, colors, brush radius, and width/opacity factors; and
 - validated vector-ruler references and typed metadata for all nine observed
   special-ruler table kinds; and
 - bounded UTF-8 text-layer content with opaque per-object attributes; and
@@ -49,16 +50,19 @@ Implemented:
 
 Not implemented yet:
 
-- semantic vector/text-attribute decoding, 3D data, or time-lapse
-  playback/timestamp semantics; and
+- full-fidelity vector-brush rendering, semantic text-attribute decoding, 3D
+  data, or time-lapse playback/timestamp semantics; and
 - template-free arbitrary object creation and full-fidelity style, brush,
   raster-cache, and animation-metadata encoders.
 
 See [the format analysis](docs/format-analysis.md) and
 [the implementation plan](docs/implementation-plan.md) for the research status
 and planned API layers. [The model guide](docs/model.md) explains the
-high-level SQLite view. Unresolved details are tracked in
-[the open-questions log](docs/open-questions.md).
+high-level SQLite view, and [the vector guide](docs/vector.md) documents the
+lossless geometry/style boundary. The workspace's separate `clipfile-svg`
+crate provides loss-aware streaming SVG output without coupling SVG types to
+the core format model. Unresolved details are tracked in [the open-questions
+log](docs/open-questions.md).
 
 ## Installation
 
@@ -77,6 +81,13 @@ payload access, `image` for zero-copy consuming conversion to image-rs, or
 ```toml
 [dependencies]
 clipfile = { version = "1.0", features = ["raster", "animation", "timelapse"] }
+```
+
+Loss-aware SVG output is provided by the separately versioned adapter crate:
+
+```toml
+[dependencies]
+clipfile-svg = "0.1"
 ```
 
 ## Example
@@ -108,6 +119,8 @@ cargo run --features timelapse --example inspect -- path/to/drawing.clip --timel
 cargo run --features sqlite --example inspect_cmc -- path/to/project.cmc
 cargo run --features sqlite --example inspect_corrections -- path/to/drawing.clip
 cargo run --features sqlite --example inspect_rulers -- path/to/drawing.clip
+cargo run --features sqlite --example inspect_vector -- path/to/drawing.clip 42
+cargo run -p clipfile-svg --example export_vector_svg -- path/to/drawing.clip new-layer.svg 42
 cargo run --features write --example rewrite -- input.clip new-output.clip
 cargo run --features "write,raster" --example invert_first_tile -- input.clip new-output.clip 42
 ```
@@ -135,15 +148,28 @@ encoded preview for a canvas after applying a size limit and cross-checking
 PNG IHDR dimensions when the stored bytes are PNG.
 
 `Database::vector_data_sources` resolves the `VectorObjectList` rows owned by
-a layer. `ClipFile::read_vector_data` then retrieves each opaque external body
-under configurable row-count and byte-size limits. The bytes are intentionally
-not interpreted until the vector-body structure is independently verified.
+a layer. `ClipFile::read_vector` then validates the declared stroke and point
+boundaries and exposes borrowed `VectorStroke` / `VectorPoint` views. Supported
+layouts provide coordinates, straight/quadratic/cubic/spline kinds, source-side
+Bezier controls, colors, stroke opacity, brush radius, and per-point width and
+opacity factors. Exact raw body, header, point, flag, and color words are still
+available for unknown revisions. Structural traversal accepts an unknown layout
+when its declared boundaries are sound, but semantic getters return `None`
+rather than guessing. `read_vector_data` remains the opaque escape hatch.
+
+The point factors are not labeled tablet pressure: the stored width and opacity
+effects are verified, but the original input-pressure value has not been
+independently identified. The separate `clipfile-svg` crate maps this API to
+SVG paths through a streaming writer. Its `SvgExportReport` counts each lossy
+approximation, and `SvgOptions` can reject selected loss categories. The
+adapter intentionally remains outside the core format model.
 
 `Database::ruler_layer` validates a layer's vector-ruler reference or its
 `SpecialRulerManager` and linked ruler rows. Parallel, curve, radial,
 concentric-circle, guide, perspective, and symmetry metadata are typed; curve
 point payloads and perspective vanishing-point guide records are bounded.
-Vector-ruler geometry remains available through the opaque vector-data API.
+Vector-ruler geometry is available through the same typed vector-data API when
+its record layout and flags have a supported interpretation.
 
 `Database::text_layer` validates stored text as UTF-8 and pairs each string
 with its original opaque attribute record. Length-prefixed extra-object arrays,

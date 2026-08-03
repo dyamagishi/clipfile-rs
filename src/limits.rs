@@ -10,6 +10,8 @@ pub struct Limits {
     max_preview_bytes: u64,
     max_vector_data_bytes: u64,
     max_vector_objects: u64,
+    max_vector_strokes: u64,
+    max_vector_points: u64,
     max_text_bytes: u64,
     max_text_objects: u64,
     max_correction_bytes: u64,
@@ -80,6 +82,18 @@ impl Limits {
     #[must_use]
     pub const fn max_vector_objects(&self) -> u64 {
         self.max_vector_objects
+    }
+
+    /// Returns the maximum number of stroke records accepted in one vector-data body.
+    #[must_use]
+    pub const fn max_vector_strokes(&self) -> u64 {
+        self.max_vector_strokes
+    }
+
+    /// Returns the maximum total number of points accepted in one vector-data body.
+    #[must_use]
+    pub const fn max_vector_points(&self) -> u64 {
+        self.max_vector_points
     }
 
     /// Returns the maximum accepted total text-layer payload size.
@@ -235,6 +249,20 @@ impl Limits {
         self
     }
 
+    /// Sets the maximum number of stroke records accepted in one vector-data body.
+    #[must_use]
+    pub const fn with_max_vector_strokes(mut self, value: u64) -> Self {
+        self.max_vector_strokes = value;
+        self
+    }
+
+    /// Sets the maximum total number of points accepted in one vector-data body.
+    #[must_use]
+    pub const fn with_max_vector_points(mut self, value: u64) -> Self {
+        self.max_vector_points = value;
+        self
+    }
+
     /// Sets the maximum accepted total text-layer payload size.
     #[must_use]
     pub const fn with_max_text_bytes(mut self, value: u64) -> Self {
@@ -353,6 +381,8 @@ impl Default for Limits {
             max_preview_bytes: 256 * 1024 * 1024,
             max_vector_data_bytes: 256 * 1024 * 1024,
             max_vector_objects: 1_000_000,
+            max_vector_strokes: 1_000_000,
+            max_vector_points: 1_000_000,
             max_text_bytes: 64 * 1024 * 1024,
             max_text_objects: 1_000_000,
             max_correction_bytes: 64 * 1024 * 1024,
