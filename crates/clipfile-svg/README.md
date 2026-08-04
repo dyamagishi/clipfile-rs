@@ -9,11 +9,26 @@ clipfile-svg = "0.2"
 ```
 
 It maps straight, quadratic Bezier, and cubic Bezier geometry directly to SVG
-paths, and fits CLIP spline samples to cubic Bezier paths with a configurable
-geometric tolerance. Per-point width becomes a fitted filled outline;
-per-point opacity becomes gradient-filled segments instead of a stroke-wide
-average. A valid one-point stroke becomes a visible `<circle>` using its
-primary color, effective width, and opacity.
+paths. CLIP spline samples can either remain an exact stored-point polyline or
+be fitted to guarded cubic Bezier segments with a configurable geometric
+tolerance. The fitter splits at corner flags and cusps, uses periodic neighbors
+for closed strokes, and locally falls back to `L` when it cannot prove a
+segment safe.
+
+`SvgStrokeRepresentation::PreserveAppearance` keeps per-point width as a
+filled outline and per-point opacity as gradient-filled segments.
+`EditableCenterline` instead guarantees one `fill="none"` centerline path for
+each multi-point stroke and uses the arithmetic mean width and opacity factors.
+`SvgSplineConversion::CubicFit` and `PreserveAppearance` are the defaults for
+compatibility with the 0.2 policy. Independently,
+`SvgOnePointStrokeHandling::PreserveDots` keeps valid one-point strokes as
+visible `<circle>` elements. `ConnectNearby` joins a run of two or more
+consecutive one-point spline strokes when their styles match and each gap is
+within half of the smaller effective stroke diameter. A nearby endpoint from
+the preceding or following compatible spline is included in the bridge. A
+single dot is never converted automatically. This option requires vector-level
+writing (`write_vector` or `write_vector_with_brush_styles`); `write_stroke`
+has no neighboring-stroke context and therefore preserves a circle.
 
 Brush shapes, secondary-color behavior, and frame fills do not always have a
 lossless mapping to plain SVG. The currently supported brush scope is a plain,
@@ -32,7 +47,10 @@ stroke's path data is allocated.
 use std::io::Cursor;
 
 use clipfile::VectorData;
-use clipfile_svg::{SvgCanvas, SvgOptions, SvgViewport, write_svg};
+use clipfile_svg::{
+    SvgCanvas, SvgOnePointStrokeHandling, SvgOptions, SvgSplineConversion,
+    SvgStrokeRepresentation, SvgViewport, write_svg,
+};
 
 fn export(vector: &VectorData) -> Result<Vec<u8>, clipfile_svg::Error> {
     let output = Cursor::new(Vec::new());
@@ -44,6 +62,9 @@ fn export(vector: &VectorData) -> Result<Vec<u8>, clipfile_svg::Error> {
         [vector],
         SvgOptions::default()
             .with_title("CLIP vector layer")
+            .with_stroke_representation(SvgStrokeRepresentation::EditableCenterline)
+            .with_one_point_stroke_handling(SvgOnePointStrokeHandling::ConnectNearby)
+            .with_spline_conversion(SvgSplineConversion::CubicFit)
             .with_spline_tolerance(0.5),
     )?;
     eprintln!(
@@ -51,6 +72,11 @@ fn export(vector: &VectorData) -> Result<Vec<u8>, clipfile_svg::Error> {
         report.marks_written(),
         report.paths_written(),
         report.dots_written(),
+    );
+    eprintln!(
+        "{} centerline path(s), {} filled outline path(s)",
+        report.centerline_paths_written(),
+        report.filled_outline_paths_written(),
     );
     assert!(report.is_consistent());
     Ok(output.into_inner())
@@ -73,7 +99,15 @@ summaries. Successful reports maintain both invariants:
 ```text
 strokes_seen    == strokes_written + strokes_skipped
 strokes_skipped == sum(skip_count)
+paths_written   == centerline_paths_written + filled_outline_paths_written
 ```
+
+The arithmetic mean in `EditableCenterline` intentionally matches the
+existing factor accumulator; it is not weighted by sample spacing. Missing
+factor fallbacks remain separately reportable. `SplineToPolyline` versus
+`SplineToCubicApproximation`, and `Variable*Average` versus the outline loss
+kinds, always describe the representation actually selected for a written
+path. Dots have no interpolation segment and receive none of those losses.
 
 The bundled `export_vector_svg` example writes to a same-directory temporary
 file, flushes and syncs it, and only then publishes a new destination. It never

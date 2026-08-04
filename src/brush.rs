@@ -588,13 +588,16 @@ impl FillStyle {
 
 impl Database {
     /// Reads one brush style by the identifier stored in a vector stroke.
-    /// Files without modern brush tables return `None`.
+    /// Files without modern brush tables return `None`. Known optional columns
+    /// missing from an older table are represented by the corresponding absent
+    /// value, such as [`BrushStyle::mipmap_index_to_plot`] returning `None`.
     pub fn brush_style(&self, id: u32, limits: Limits) -> Result<Option<BrushStyle>> {
         if self.schema().table(STYLE_TABLE).is_none() {
             return Ok(None);
         }
         require_style_columns(self)?;
-        let mut statement = self.connection().prepare(STYLE_QUERY_BY_ID)?;
+        let query = style_query(self, "WHERE MainId = ?1 LIMIT 1");
+        let mut statement = self.connection().prepare(&query)?;
         let raw = statement
             .query_row(params![i64::from(id)], read_style_row)
             .optional()?;
@@ -602,12 +605,17 @@ impl Database {
     }
 
     /// Reads every brush style owned by one canvas, ordered by identifier.
+    ///
+    /// Known optional columns missing from an older table use the same absent
+    /// values as [`Database::brush_style`]. Missing required columns remain an
+    /// error.
     pub fn brush_styles(&self, canvas_id: i64, limits: Limits) -> Result<Vec<BrushStyle>> {
         if self.schema().table(STYLE_TABLE).is_none() {
             return Ok(Vec::new());
         }
         require_style_columns(self)?;
-        let mut statement = self.connection().prepare(STYLE_QUERY_BY_CANVAS)?;
+        let query = style_query(self, "WHERE CanvasId = ?1 ORDER BY MainId");
+        let mut statement = self.connection().prepare(&query)?;
         let rows = statement
             .query_map(params![canvas_id], read_style_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -950,7 +958,53 @@ impl Database {
     }
 }
 
-const STYLE_COLUMNS: &[&str] = &[
+// These columns are needed to decode the stable BrushStyle record. Their
+// absence indicates a schema that this reader cannot interpret safely.
+const REQUIRED_STYLE_COLUMNS: &[&str] = &[
+    "MainId",
+    "CanvasId",
+    "NextIndex",
+    "StyleFlag",
+    "PenRadius",
+    "SizeEffector",
+    "OpacityEffector",
+    "FlowBase",
+    "FlowEffector",
+    "AntiAlias",
+    "Hardness",
+    "IntervalBase",
+    "IntervalEffector",
+    "ThicknessBase",
+    "ThicknessEffector",
+    "RotationBase",
+    "RotationEffector",
+    "RotationRandom",
+    "PatternStyle",
+    "CompositeMode",
+    "TexturePattern",
+    "TextureFlag",
+    "TextureScale",
+    "TextureRotate",
+    "TextureDensityBase",
+    "TextureDensityEffector",
+    "SubColorBase",
+    "SubColorEffector",
+    "SprayFlag",
+    "SpraySizeBase",
+    "SpraySizeEffector",
+    "SprayDensityBase",
+    "SprayDensityEffector",
+    "FixedSpray",
+];
+
+// These columns were added by schema evolution and have a lossless public
+// representation for absence. Keep this list deliberately narrow: unknown
+// missing fields must not silently acquire guessed renderer defaults.
+const OPTIONAL_STYLE_COLUMNS: &[&str] = &["MipmapIndexToPlot"];
+
+// Stable projection order consumed by `read_style_row`. Optional columns that
+// are absent from an older schema are projected as SQL NULL in the same slot.
+const STYLE_COLUMN_ORDER: &[&str] = &[
     "MainId",
     "CanvasId",
     "NextIndex",
@@ -988,21 +1042,22 @@ const STYLE_COLUMNS: &[&str] = &[
     "FixedSpray",
 ];
 
-const STYLE_QUERY_BY_ID: &str = "SELECT MainId, CanvasId, NextIndex, StyleFlag, PenRadius, SizeEffector, \
-    OpacityEffector, FlowBase, FlowEffector, AntiAlias, MipmapIndexToPlot, Hardness, IntervalBase, \
-    IntervalEffector, ThicknessBase, ThicknessEffector, RotationBase, RotationEffector, \
-    RotationRandom, PatternStyle, CompositeMode, TexturePattern, TextureFlag, TextureScale, \
-    TextureRotate, TextureDensityBase, TextureDensityEffector, SubColorBase, SubColorEffector, \
-    SprayFlag, SpraySizeBase, SpraySizeEffector, SprayDensityBase, SprayDensityEffector, FixedSpray \
-    FROM BrushStyle WHERE MainId = ?1 LIMIT 1";
-
-const STYLE_QUERY_BY_CANVAS: &str = "SELECT MainId, CanvasId, NextIndex, StyleFlag, PenRadius, SizeEffector, \
-    OpacityEffector, FlowBase, FlowEffector, AntiAlias, MipmapIndexToPlot, Hardness, IntervalBase, \
-    IntervalEffector, ThicknessBase, ThicknessEffector, RotationBase, RotationEffector, \
-    RotationRandom, PatternStyle, CompositeMode, TexturePattern, TextureFlag, TextureScale, \
-    TextureRotate, TextureDensityBase, TextureDensityEffector, SubColorBase, SubColorEffector, \
-    SprayFlag, SpraySizeBase, SpraySizeEffector, SprayDensityBase, SprayDensityEffector, FixedSpray \
-    FROM BrushStyle WHERE CanvasId = ?1 ORDER BY MainId";
+fn style_query(database: &Database, suffix: &str) -> String {
+    let projection = STYLE_COLUMN_ORDER
+        .iter()
+        .map(|&column| {
+            if OPTIONAL_STYLE_COLUMNS.contains(&column)
+                && !database.schema().has_column(STYLE_TABLE, column)
+            {
+                "NULL"
+            } else {
+                column
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("SELECT {projection} FROM {STYLE_TABLE} {suffix}")
+}
 
 #[derive(Debug)]
 struct RawStyle {
@@ -1193,7 +1248,7 @@ fn finish_graph(raw: RawGraph, limits: Limits) -> Result<BrushEffectorGraph> {
 }
 
 fn require_style_columns(database: &Database) -> Result<()> {
-    for &column in STYLE_COLUMNS {
+    for &column in REQUIRED_STYLE_COLUMNS {
         database.require_column(STYLE_TABLE, column)?;
     }
     Ok(())
@@ -1310,6 +1365,62 @@ mod tests {
 
     use super::*;
 
+    fn style_value(column: &str) -> &'static str {
+        match column {
+            "MainId" => "1",
+            "CanvasId" => "7",
+            "NextIndex" => "0",
+            "StyleFlag" => "3",
+            "PenRadius" => "2.5",
+            "SizeEffector"
+            | "OpacityEffector"
+            | "FlowEffector"
+            | "IntervalEffector"
+            | "ThicknessEffector"
+            | "TextureDensityEffector"
+            | "SubColorEffector"
+            | "SpraySizeEffector"
+            | "SprayDensityEffector" => "x'00000000'",
+            "FlowBase" => "0.75",
+            "AntiAlias" => "2",
+            "MipmapIndexToPlot" => "42",
+            "Hardness" | "ThicknessBase" | "TextureScale" => "1.0",
+            "IntervalBase" => "0.125",
+            "RotationBase" | "RotationRandom" | "TextureRotate" | "SubColorBase"
+            | "SpraySizeBase" | "SprayDensityBase" => "0.0",
+            "RotationEffector" | "PatternStyle" | "CompositeMode" | "TexturePattern"
+            | "TextureFlag" | "SprayFlag" | "FixedSpray" => "0",
+            "TextureDensityBase" => "0.5",
+            _ => panic!("missing BrushStyle fixture value for {column}"),
+        }
+    }
+
+    fn style_database_without(omitted_column: Option<&str>) -> Database {
+        let columns = STYLE_COLUMN_ORDER
+            .iter()
+            .copied()
+            .filter(|&column| Some(column) != omitted_column)
+            .collect::<Vec<_>>();
+        let declarations = columns
+            .iter()
+            .map(|column| format!("{column} BLOB"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let values = columns
+            .iter()
+            .map(|column| style_value(column))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(&format!(
+                "CREATE TABLE BrushStyle ({declarations}); \
+                 INSERT INTO BrushStyle VALUES ({values});"
+            ))
+            .unwrap();
+        Database::from_connection(connection).unwrap()
+    }
+
     #[test]
     fn parses_effectors_and_big_endian_graph_points() {
         let effector = BrushEffector::parse(vec![0, 0, 0, 0x11, 0, 0, 0, 0, 0, 0, 0, 8]);
@@ -1363,5 +1474,38 @@ mod tests {
                 .is_empty()
         );
         assert!(database.brush_style_manager(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn missing_optional_mipmap_column_preserves_other_style_fields() {
+        let modern = style_database_without(None)
+            .brush_style(1, Limits::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(modern.mipmap_index_to_plot(), Some(42));
+
+        let older_database = style_database_without(Some("MipmapIndexToPlot"));
+        let older_styles = older_database.brush_styles(7, Limits::default()).unwrap();
+        assert_eq!(older_styles.len(), 1);
+        assert_eq!(older_styles[0].mipmap_index_to_plot(), None);
+
+        let mut expected = modern;
+        expected.mipmap_index_to_plot = None;
+        assert_eq!(older_styles[0], expected);
+        assert_eq!(
+            older_database.brush_style(1, Limits::default()).unwrap(),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn missing_required_style_column_remains_an_error() {
+        let database = style_database_without(Some("Hardness"));
+        let error = database.brush_styles(7, Limits::default()).unwrap_err();
+        assert!(matches!(
+            error,
+            Error::MissingColumn { table, column }
+                if table == STYLE_TABLE && column == "Hardness"
+        ));
     }
 }

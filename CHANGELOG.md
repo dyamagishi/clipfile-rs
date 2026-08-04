@@ -7,6 +7,39 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [clipfile-svg 0.2.1] - 2026-08-04
+
+### Added
+
+- `clipfile-svg` now exposes independent appearance/editable-centerline and
+  polyline/guarded-cubic spline modes through `SvgOptions`, plus report counts
+  for centerline and filled-outline paths.
+- A local spline-fit line fallback has its own policy-rejectable
+  `SplineFitSegmentToLine` loss category.
+- `clipfile-svg` can optionally join consecutive, style-compatible nearby
+  one-point spline strokes into an editable centerline while preserving dots
+  by default for backward compatibility.
+
+### Changed
+
+- Spline cubic fitting now splits at corner flags and cusps, handles closed
+  strokes with periodic neighbors, rejects non-finite values, loops,
+  backtracking, oversized handles, and tolerance-corridor overshoot, and falls
+  back only for unsafe local segments.
+- Variable-width outlines now use bounded joins, adaptive width-transition
+  samples, guarded sides, and cap-free closed contours. Variable-opacity
+  segments use spacing-aware tangents with guarded line fallback.
+- Width and opacity variation are calculated after drawable-point
+  normalization, so outline/average losses match the mark actually written.
+
+## [1.2.1] - 2026-08-04
+
+### Fixed
+
+- Older `BrushStyle` schemas that omit the optional `MipmapIndexToPlot`
+  column now return `None` for that field instead of failing the complete
+  style query. Required columns remain errors.
+
 ## [clipfile-svg 0.2.0] - 2026-08-04
 
 ### Changed
@@ -231,7 +264,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Optional offscreen metadata parsing, bounded zlib tile decoding, and raster assembly.
 - Project, canvas, layer, and cycle-checked layer-tree models.
 
-[Unreleased]: https://github.com/Aodaruma/clipfile-rs/compare/clipfile-svg-v0.2.0...HEAD
+[Unreleased]: https://github.com/Aodaruma/clipfile-rs/compare/clipfile-svg-v0.2.1...HEAD
+[clipfile-svg 0.2.1]: https://github.com/Aodaruma/clipfile-rs/compare/clipfile-svg-v0.2.0...clipfile-svg-v0.2.1
+[1.2.1]: https://github.com/Aodaruma/clipfile-rs/compare/v1.2.0...v1.2.1
 [clipfile-svg 0.2.0]: https://github.com/Aodaruma/clipfile-rs/compare/clipfile-svg-v0.1.1...clipfile-svg-v0.2.0
 [1.2.0]: https://github.com/Aodaruma/clipfile-rs/compare/v1.1.0...v1.2.0
 [clipfile-svg 0.1.1]: https://github.com/Aodaruma/clipfile-rs/compare/clipfile-svg-v0.1.0...clipfile-svg-v0.1.1

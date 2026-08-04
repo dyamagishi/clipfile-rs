@@ -59,7 +59,7 @@ stroke数は`Limits::max_vector_strokes`、全point数は`Limits::max_vector_poi
 
 二次・三次Bezierの制御点は、次のpointではなく区間の始点側pointに属する。つまりpoint `i` から `i + 1` への区間ではpoint `i` のcontrolsを使う。closed strokeの最終区間も最後のpointのcontrolsから最初のpointへ接続する。
 
-coreはCLIP splineの保存座標とkindを返し、描画方式を決めない。`clipfile-svg`は公式アプリのSVG出力と実作業ファイルで照合したcurve fittingを使い、既定0.5 SVG user unitの許容誤差でcubic Bezierへ変換する。許容誤差は`SvgOptions::with_spline_tolerance`で変更できる。公式SVGの649 anchor中498件は保存点と丸め誤差内で一致したが、151件は点間の仮想anchorだったため、公式処理は保存点の選択だけでなく平滑化または再分割も行うと考えられる。現在のfitはこの非公開処理の近似であり、制御点の完全一致を保証しない。
+coreはCLIP splineの保存座標・point flag・kindを返し、描画方式を決めない。`clipfile-svg`は`SvgSplineConversion::Polyline`でdrawableな保存点をM/Lへそのまま写像するか、`CubicFit`で公式アプリのSVG出力と実作業ファイルを基準にしたcurve fittingを選べる。既定fitは0.5 SVG user unitの許容誤差を使い、corner/cuspで区間を分割し、閉線を周期的に扱い、overshoot・loop・非有限値・過大handleを検査する。安全性を証明できない局所区間だけLへfallbackし、`SplineFitSegmentToLine`を記録する。許容誤差は`SvgOptions::with_spline_tolerance`で変更できる。公式SVGの649 anchor中498件は保存点と丸め誤差内で一致したが、151件は点間の仮想anchorだったため、公式処理は保存点の選択だけでなく平滑化または再分割も行うと考えられる。現在のfitはこの非公開処理のsample-to-cubic近似であり、NURBS→Bezier変換や制御点の完全一致を意味しない。
 
 ## style、太さ、不透明度
 
@@ -78,20 +78,24 @@ coreはCLIP splineの保存座標とkindを返し、描画方式を決めない�
 
 ## SVGとの境界
 
-workspace内の独立crate [`clipfile-svg`](../crates/clipfile-svg/) が、公開APIからSVG要素を逐次出力する。直線、二次Bezier、三次Bezierをpathへ直接写像し、有効な1点strokeは実効幅・主色・opacityを持つcircleへ写像する。1点strokeには補間区間がないためspline近似には数えない。次を明示的なlossとして扱う。
+workspace内の独立crate [`clipfile-svg`](../crates/clipfile-svg/) が、公開APIからSVG要素を逐次出力する。直線、二次Bezier、三次Bezierをpathへ直接写像する。既定の`SvgOnePointStrokeHandling::PreserveDots`では有効な1点strokeを実効幅・主色・opacityを持つcircleへ写像する。任意の`ConnectNearby`では、同じstyleを持つ2件以上の連続した1点spline strokeについて、各点間距離が小さい側の実効線幅の半分以内なら中心線pathへ結合する。互換性のある直前・直後splineの端点も同じ距離条件でbridgeへ含める。単独点は変換しない。この判定にはstroke順序が必要なため`write_vector` / `write_vector_with_brush_styles`でだけ行い、単独の`write_stroke`はcircleを維持する。
 
-- splineは許容誤差付きのcubic Bezier fitting
-- pointごとの可変幅は左右輪郭、可変不透明度は区間gradient
+- splineは選択した保存点polylineまたは許容誤差付きcubic Bezier fitting
+- 見た目優先modeではpointごとの可変幅を左右輪郭、可変不透明度を区間gradient
+- 編集可能中心線modeでは各factorの単純算術平均（点間距離の重み付けは行わない）
 - plain hard round以外のbrush形状・textureはround linecap/joinへの明示的近似
 - sub color metadataとframe fill styleは未反映
 - nominal widthがない場合は1 SVG user unit
+- 近接する1点strokeを中心線へ結合した場合は`AdjacentOnePointStrokesConnected`
 - semantic layoutが未知のstrokeはskip
 
-既定では近似を実行して`SvgExportReport`に種類別のstroke数を集計する。`paths_written`は実際のpath要素数、circle数は`dots_written`、両者の合計は`marks_written`で取得する。可変不透明度では1 strokeが複数pathになり得るため、入力stroke数は`strokes_written`で別に取得する。描画しないstrokeは`SvgSkipKind`で空、未知semantic、未知curve、不完全geometry、policy拒否に分類される。成功したreportでは`strokes_seen == strokes_written + strokes_skipped`かつskip総数が`strokes_skipped`と一致する。
+既定では近似を実行して`SvgExportReport`に種類別のstroke数を集計する。`paths_written`は実際のpath要素数、内訳は`centerline_paths_written`と`filled_outline_paths_written`、circle数は`dots_written`、pathとcircleの合計は`marks_written`で取得する。可変不透明度では1 strokeが複数pathになり得るため、入力stroke数は`strokes_written`で別に取得する。描画しないstrokeは`SvgSkipKind`で空、未知semantic、未知curve、不完全geometry、policy拒否に分類される。成功したreportでは`strokes_seen == strokes_written + strokes_skipped`、skip総数が`strokes_skipped`、path内訳の和が`paths_written`と一致する。
 
 `SvgLossKind::severity`は近似・欠落・fallbackを分類し、`SvgOptions::reject_omissions`で近似を許しながら欠落だけを拒否できる。`SvgExportReport::merge`は複数ファイルの集計に使える。`SvgViewport`は表示width/heightと非0または負のviewBox原点を分離する。`SvgWriter::write_group` / `write_vectors_group`はopacity、id、title付きのgroupをcallback内で対にする。blend mode、mask、clipping、transformは推測して変換しない。
 
 XMLは`quick-xml`へ逐次書き込み、全SVG DOMや全strokeの変換結果を保持しない。割り当てる主な一時領域は現在の1 strokeのpath dataである。公式exampleは同一directoryの一時ファイルへ書き、finish・flush・sync後だけ新規出力として確定する。
+
+`SvgStrokeRepresentation::PreserveAppearance`、`SvgSplineConversion::CubicFit`、`SvgOnePointStrokeHandling::PreserveDots`が既定である。`EditableCenterline`は2点以上を原則1本の`fill="none"` pathにし、round cap/joinを明示する。1点strokeの保持・近接結合はこの可変幅表現とは独立して選択する。保持された1点strokeは区間がないためSpline変換・outline/average lossを持たない。factor変動はsentinelと重複点を除いた実drawable点だけから判定する。
 
 ## 高ビット深度raster
 
