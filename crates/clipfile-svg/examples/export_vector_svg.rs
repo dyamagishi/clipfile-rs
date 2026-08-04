@@ -1,6 +1,7 @@
 //! Exports one CLIP vector layer through the `clipfile-svg` adapter.
 
 use std::{
+    collections::BTreeMap,
     env,
     ffi::OsString,
     fs::{self, File, OpenOptions},
@@ -45,6 +46,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     let canvas = SvgCanvas::new(width, height)?;
+    let brush_styles = database
+        .brush_styles(canvas_id, limits)?
+        .into_iter()
+        .map(|style| (style.id(), style))
+        .collect::<BTreeMap<_, _>>();
 
     let raw_layer_opacity = layer.opacity_fraction();
     let layer_opacity = raw_layer_opacity.clamp(0.0, 1.0);
@@ -82,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     writer.write_group(group, |writer| -> Result<(), Box<dyn std::error::Error>> {
         for source in &sources {
             let vector = clip.read_vector(&database, source, limits)?;
-            writer.write_vector(&vector)?;
+            writer.write_vector_with_brush_styles(&vector, |id| brush_styles.get(&id))?;
         }
         Ok(())
     })?;

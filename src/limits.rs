@@ -12,6 +12,8 @@ pub struct Limits {
     max_vector_objects: u64,
     max_vector_strokes: u64,
     max_vector_points: u64,
+    max_brush_bytes: u64,
+    max_brush_items: u64,
     max_text_bytes: u64,
     max_text_objects: u64,
     max_correction_bytes: u64,
@@ -94,6 +96,18 @@ impl Limits {
     #[must_use]
     pub const fn max_vector_points(&self) -> u64 {
         self.max_vector_points
+    }
+
+    /// Returns the maximum accepted total size of brush metadata blobs.
+    #[must_use]
+    pub const fn max_brush_bytes(&self) -> u64 {
+        self.max_brush_bytes
+    }
+
+    /// Returns the maximum number of brush styles, graphs, and graph points.
+    #[must_use]
+    pub const fn max_brush_items(&self) -> u64 {
+        self.max_brush_items
     }
 
     /// Returns the maximum accepted total text-layer payload size.
@@ -263,6 +277,20 @@ impl Limits {
         self
     }
 
+    /// Sets the maximum accepted total size of brush metadata blobs.
+    #[must_use]
+    pub const fn with_max_brush_bytes(mut self, value: u64) -> Self {
+        self.max_brush_bytes = value;
+        self
+    }
+
+    /// Sets the maximum number of brush styles, graphs, and graph points.
+    #[must_use]
+    pub const fn with_max_brush_items(mut self, value: u64) -> Self {
+        self.max_brush_items = value;
+        self
+    }
+
     /// Sets the maximum accepted total text-layer payload size.
     #[must_use]
     pub const fn with_max_text_bytes(mut self, value: u64) -> Self {
@@ -383,6 +411,8 @@ impl Default for Limits {
             max_vector_objects: 1_000_000,
             max_vector_strokes: 1_000_000,
             max_vector_points: 1_000_000,
+            max_brush_bytes: 64 * 1024 * 1024,
+            max_brush_items: 1_000_000,
             max_text_bytes: 64 * 1024 * 1024,
             max_text_objects: 1_000_000,
             max_correction_bytes: 64 * 1024 * 1024,

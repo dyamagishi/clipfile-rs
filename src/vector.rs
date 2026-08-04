@@ -351,7 +351,7 @@ pub struct VectorStrokeStyle {
     brush_id: u32,
     brush_radius: Option<f64>,
     fill_style_id: Option<u32>,
-    modern_normal_extra: Option<u32>,
+    brush_style_id: Option<u32>,
 }
 
 impl VectorStrokeStyle {
@@ -419,10 +419,22 @@ impl VectorStrokeStyle {
         self.fill_style_id
     }
 
-    /// Unnamed extra word present in the observed 92-byte normal header.
+    /// Identifier of the linked [`BrushStyle`](crate::BrushStyle) row.
+    ///
+    /// This reference is present in the observed 92-byte normal-stroke
+    /// header. Older normal layouts and other stroke kinds return `None`.
+    #[must_use]
+    pub const fn brush_style_id(self) -> Option<u32> {
+        self.brush_style_id
+    }
+
+    /// Raw compatibility alias for [`Self::brush_style_id`].
+    ///
+    /// This field was unnamed in clipfile 1.1.0. It is now confirmed to match
+    /// `BrushStyle.MainId` in files carrying the modern brush tables.
     #[must_use]
     pub const fn modern_normal_extra(self) -> Option<u32> {
-        self.modern_normal_extra
+        self.brush_style_id
     }
 }
 
@@ -447,7 +459,7 @@ impl From<DecodedStrokeStyle> for VectorStrokeStyle {
             brush_id: value.brush_id,
             brush_radius: value.brush_radius,
             fill_style_id: value.fill_style_id,
-            modern_normal_extra: value.modern_normal_extra,
+            brush_style_id: value.brush_style_id,
         }
     }
 }
@@ -2207,7 +2219,8 @@ mod tests {
                 style.brush_radius().map(|radius| radius * 2.0)
             );
             assert_eq!(style.fill_style_id(), (header == 96).then_some(11));
-            assert_eq!(style.modern_normal_extra(), (header == 92).then_some(1));
+            assert_eq!(style.brush_style_id(), (header == 92).then_some(1));
+            assert_eq!(style.modern_normal_extra(), style.brush_style_id());
 
             let first = stroke.point(0).unwrap();
             assert_eq!(first, stroke.points().next().unwrap());

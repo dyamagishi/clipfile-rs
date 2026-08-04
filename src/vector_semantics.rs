@@ -16,7 +16,7 @@ const SUB_COLOR_OFFSET: usize = 52;
 const STROKE_OPACITY_OFFSET: usize = 64;
 const BASE_BRUSH_ID_OFFSET: usize = 72;
 const LEGACY_NORMAL_RADIUS_OFFSET: usize = 76;
-const MODERN_NORMAL_EXTRA_OFFSET: usize = 76;
+const MODERN_NORMAL_BRUSH_STYLE_ID_OFFSET: usize = 76;
 const MODERN_NORMAL_RADIUS_OFFSET: usize = 80;
 const FRAME_BRUSH_ID_OFFSET: usize = 76;
 const FRAME_FILL_STYLE_ID_OFFSET: usize = 80;
@@ -81,10 +81,8 @@ pub(crate) struct DecodedStrokeStyle {
     pub(crate) brush_id: u32,
     pub(crate) brush_radius: Option<f64>,
     pub(crate) fill_style_id: Option<u32>,
-    /// The additional modern-normal word at offset 76 has no confirmed
-    /// semantic name, but retaining it here avoids silently conflating the
-    /// 88- and 92-byte normal layouts.
-    pub(crate) modern_normal_extra: Option<u32>,
+    /// `BrushStyle.MainId` referenced by the observed 92-byte normal header.
+    pub(crate) brush_style_id: Option<u32>,
 }
 
 /// Confirmed per-point width and opacity factors.
@@ -203,38 +201,36 @@ pub(crate) fn decode_stroke_style(
     validate_unit_f64(stroke_opacity, "stroke opacity")?;
     let base_brush_id = read_u32(header, BASE_BRUSH_ID_OFFSET, "base brush identifier")?;
 
-    let (brush_id, brush_radius, fill_style_id, modern_normal_extra) =
-        match (kind, layout.header_size) {
-            (DecodedStrokeKind::Normal, 88) => {
-                let radius = read_f64(header, LEGACY_NORMAL_RADIUS_OFFSET, "brush radius")?;
-                validate_nonnegative_f64(radius, "brush radius")?;
-                (base_brush_id, Some(radius), None, None)
-            }
-            (DecodedStrokeKind::Normal, 92) => {
-                let extra = read_u32(
-                    header,
-                    MODERN_NORMAL_EXTRA_OFFSET,
-                    "modern normal extra word",
-                )?;
-                let radius = read_f64(header, MODERN_NORMAL_RADIUS_OFFSET, "brush radius")?;
-                validate_nonnegative_f64(radius, "brush radius")?;
-                (base_brush_id, Some(radius), None, Some(extra))
-            }
-            (DecodedStrokeKind::Ruler, 76) => (base_brush_id, None, None, None),
-            (DecodedStrokeKind::Frame, 96) => {
-                let frame_brush_id =
-                    read_u32(header, FRAME_BRUSH_ID_OFFSET, "frame brush identifier")?;
-                let fill_style_id = read_u32(
-                    header,
-                    FRAME_FILL_STYLE_ID_OFFSET,
-                    "frame fill-style identifier",
-                )?;
-                let radius = read_f64(header, FRAME_RADIUS_OFFSET, "frame brush radius")?;
-                validate_nonnegative_f64(radius, "frame brush radius")?;
-                (frame_brush_id, Some(radius), Some(fill_style_id), None)
-            }
-            _ => unreachable!("supported semantic layout has a correlated header"),
-        };
+    let (brush_id, brush_radius, fill_style_id, brush_style_id) = match (kind, layout.header_size) {
+        (DecodedStrokeKind::Normal, 88) => {
+            let radius = read_f64(header, LEGACY_NORMAL_RADIUS_OFFSET, "brush radius")?;
+            validate_nonnegative_f64(radius, "brush radius")?;
+            (base_brush_id, Some(radius), None, None)
+        }
+        (DecodedStrokeKind::Normal, 92) => {
+            let extra = read_u32(
+                header,
+                MODERN_NORMAL_BRUSH_STYLE_ID_OFFSET,
+                "brush-style identifier",
+            )?;
+            let radius = read_f64(header, MODERN_NORMAL_RADIUS_OFFSET, "brush radius")?;
+            validate_nonnegative_f64(radius, "brush radius")?;
+            (base_brush_id, Some(radius), None, Some(extra))
+        }
+        (DecodedStrokeKind::Ruler, 76) => (base_brush_id, None, None, None),
+        (DecodedStrokeKind::Frame, 96) => {
+            let frame_brush_id = read_u32(header, FRAME_BRUSH_ID_OFFSET, "frame brush identifier")?;
+            let fill_style_id = read_u32(
+                header,
+                FRAME_FILL_STYLE_ID_OFFSET,
+                "frame fill-style identifier",
+            )?;
+            let radius = read_f64(header, FRAME_RADIUS_OFFSET, "frame brush radius")?;
+            validate_nonnegative_f64(radius, "frame brush radius")?;
+            (frame_brush_id, Some(radius), Some(fill_style_id), None)
+        }
+        _ => unreachable!("supported semantic layout has a correlated header"),
+    };
 
     Ok(Some(DecodedStrokeStyle {
         kind,
@@ -245,7 +241,7 @@ pub(crate) fn decode_stroke_style(
         brush_id,
         brush_radius,
         fill_style_id,
-        modern_normal_extra,
+        brush_style_id,
     }))
 }
 
@@ -527,17 +523,17 @@ mod tests {
         assert_eq!(style.brush_id, 41);
         assert_eq!(style.brush_radius, Some(19.5));
         assert_eq!(style.fill_style_id, None);
-        assert_eq!(style.modern_normal_extra, None);
+        assert_eq!(style.brush_style_id, None);
 
         let mut modern = base_header(92);
-        write_u32(&mut modern, MODERN_NORMAL_EXTRA_OFFSET, 1);
+        write_u32(&mut modern, MODERN_NORMAL_BRUSH_STYLE_ID_OFFSET, 1);
         write_f64(&mut modern, MODERN_NORMAL_RADIUS_OFFSET, 5.0);
         let style = decode_stroke_style(&modern, layout(92, 76, 88), NORMAL_SPLINE)
             .unwrap()
             .unwrap();
         assert_eq!(style.brush_id, 41);
         assert_eq!(style.brush_radius, Some(5.0));
-        assert_eq!(style.modern_normal_extra, Some(1));
+        assert_eq!(style.brush_style_id, Some(1));
     }
 
     #[test]

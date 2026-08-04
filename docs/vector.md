@@ -59,7 +59,7 @@ stroke数は`Limits::max_vector_strokes`、全point数は`Limits::max_vector_poi
 
 二次・三次Bezierの制御点は、次のpointではなく区間の始点側pointに属する。つまりpoint `i` から `i + 1` への区間ではpoint `i` のcontrolsを使う。closed strokeの最終区間も最後のpointのcontrolsから最初のpointへ接続する。
 
-CLIP splineの補間規則はSVG pathへ直接対応付けていないため、ライブラリは座標とkindを返し、描画方式を決めない。
+coreはCLIP splineの保存座標とkindを返し、描画方式を決めない。`clipfile-svg`は公式アプリのSVG出力と実作業ファイルで照合したcurve fittingを使い、既定0.45 SVG user unitの許容誤差でcubic Bezierへ変換する。許容誤差は`SvgOptions::with_spline_tolerance`で変更できる。
 
 ## style、太さ、不透明度
 
@@ -70,9 +70,9 @@ CLIP splineの補間規則はSVG pathへ直接対応付けていないため、�
 - common/effective brush ID
 - 保存されているbrush radiusと、その2倍を返すnominal diameter helper
 - frame fill-style ID
-- 92-byte normal headerの未命名追加word
+- 92-byte normal headerが参照する`BrushStyle.MainId`
 
-これは完全なbrush rendererではない。brush IDが参照する形状、texture、混色などはstyle値だけでは復元できない。
+`Database::brush_style` / `brush_styles`は、このIDからsize・opacity・flow・interval・thickness等のeffector、hardness、tip/texture/spray参照、sub color量を取得する。graph-backed effectorは`brush_effector_graph`でbig-endian `f64`入出力点へ展開できる。`BrushPatternImage` / `BrushPatternStyle` / `BrushFixedSpray`は先端画像・並び順・spray payloadを公開し、未知の配列suffixはraw byteを保持する。frameの`fill_style_id`は`Database::fill_style`へ解決できる。
 
 各pointの`width_factor`と`opacity_factor`は、それぞれstrokeのnominal width・opacityへ作用する確認済み係数である。これらを入力機器の生の「筆圧」とは呼ばない。元のtablet pressure値またはその変換規則は独立に確認できていないためである。
 
@@ -80,17 +80,21 @@ CLIP splineの補間規則はSVG pathへ直接対応付けていないため、�
 
 workspace内の独立crate [`clipfile-svg`](../crates/clipfile-svg/) が、公開APIからSVG要素を逐次出力する。直線、二次Bezier、三次Bezierをpathへ直接写像し、有効な1点strokeは実効幅・主色・opacityを持つcircleへ写像する。1点strokeには補間区間がないためspline近似には数えない。次を明示的なlossとして扱う。
 
-- splineは直線区間
-- pointごとの可変幅・不透明度はstroke内の一定平均値
-- brush形状・textureはround linecap/join
+- splineは許容誤差付きのcubic Bezier fitting
+- pointごとの可変幅は左右輪郭、可変不透明度は区間gradient
+- 解決できないbrush形状・textureはround linecap/join
 - sub color metadataとframe fill styleは未反映
 - nominal widthがない場合は1 SVG user unit
 - semantic layoutが未知のstrokeはskip
 
-既定では近似を実行して`SvgExportReport`に種類別のstroke数を集計する。`paths_written`はpath数のまま維持し、circle数は`dots_written`、両者の合計は`marks_written`で取得する。描画しないstrokeは`SvgSkipKind`で空、未知semantic、未知curve、不完全geometry、policy拒否に分類される。成功したreportでは`strokes_seen == marks_written + strokes_skipped`かつskip総数が`strokes_skipped`と一致する。
+既定では近似を実行して`SvgExportReport`に種類別のstroke数を集計する。`paths_written`は実際のpath要素数、circle数は`dots_written`、両者の合計は`marks_written`で取得する。可変不透明度では1 strokeが複数pathになり得るため、入力stroke数は`strokes_written`で別に取得する。描画しないstrokeは`SvgSkipKind`で空、未知semantic、未知curve、不完全geometry、policy拒否に分類される。成功したreportでは`strokes_seen == strokes_written + strokes_skipped`かつskip総数が`strokes_skipped`と一致する。
 
 `SvgLossKind::severity`は近似・欠落・fallbackを分類し、`SvgOptions::reject_omissions`で近似を許しながら欠落だけを拒否できる。`SvgExportReport::merge`は複数ファイルの集計に使える。`SvgViewport`は表示width/heightと非0または負のviewBox原点を分離する。`SvgWriter::write_group` / `write_vectors_group`はopacity、id、title付きのgroupをcallback内で対にする。blend mode、mask、clipping、transformは推測して変換しない。
 
 XMLは`quick-xml`へ逐次書き込み、全SVG DOMや全strokeの変換結果を保持しない。割り当てる主な一時領域は現在の1 strokeのpath dataである。公式exampleは同一directoryの一時ファイルへ書き、finish・flush・sync後だけ新規出力として確定する。
+
+## 高ビット深度raster
+
+`PixelPacking::native_bits_per_pixel` / `native_bytes_per_pixel`は8-bit `PixelFormat`とは独立に保存深度を返す。`ClipFile::decode_native_tile`はbyte-alignedな16-bit/32-bit channelを`DecodedTile`のnative planar/interleaved byte列として返し、8-bitへ変換しない。bit-packed layoutはbit順序・row paddingが未確定なため対象外である。今回の実作業ファイルに含まれる131 raster sourceはすべて8-bit/channelだったため、高ビット深度のend-to-end fixture検証は引き続き必要となる。
 
 core crateはSVG型や出力policyに依存せず、format modelとadapterの責務を分離する。adapterは`clipfile-svg`として独立versionで公開し、`clipfile 1.1`の公開vector APIへversion付きで依存する。

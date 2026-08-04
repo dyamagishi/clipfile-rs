@@ -7,6 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Typed brush-style, dynamics graph, brush-tip image/style, fixed-spray, and
+  frame-fill metadata APIs, including `VectorStrokeStyle::brush_style_id` and
+  bounded brush-specific parser limits.
+- Native byte-aligned raster tile decoding based on `PixelPacking`, preserving
+  16-bit and 32-bit channel bytes without converting through an 8-bit
+  `PixelFormat`.
+
+### Changed
+
+- `clipfile-svg` now fits CLIP spline samples to cubic Bezier paths, preserves
+  variable width as a smooth filled outline, and preserves variable opacity
+  through per-segment linear gradients instead of averaging the point values.
+- The SVG example resolves core brush styles and suppresses the round-brush
+  approximation warning for confirmed hard, circular, untextured tips.
+
 ## [clipfile-svg 0.1.1] - 2026-08-04
 
 ### Added

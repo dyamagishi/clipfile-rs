@@ -84,6 +84,30 @@ impl PixelPacking {
     pub const fn is_monochrome(&self) -> bool {
         self.raw[14] != 0
     }
+
+    /// Total stored bits per pixel for alpha planes plus the color buffer.
+    ///
+    /// This retains 16-bit and 32-bit channel metadata instead of coercing it
+    /// to one of the typed eight-bit [`PixelFormat`] variants.
+    #[must_use]
+    pub const fn native_bits_per_pixel(&self) -> Option<u32> {
+        let Some(alpha) = self.alpha_channels().checked_mul(self.alpha_bit_depth()) else {
+            return None;
+        };
+        match alpha.checked_add(self.buffer_bit_depth()) {
+            Some(0) | None => None,
+            value => value,
+        }
+    }
+
+    /// Native whole bytes per pixel when the packing is byte-aligned.
+    #[must_use]
+    pub const fn native_bytes_per_pixel(&self) -> Option<u32> {
+        match self.native_bits_per_pixel() {
+            Some(bits) if bits % 8 == 0 => Some(bits / 8),
+            _ => None,
+        }
+    }
 }
 
 /// Parsed metadata from an SQLite `Offscreen.Attribute` BLOB.
@@ -2942,6 +2966,75 @@ impl<R: Read + Seek> ClipFile<R> {
         }))
     }
 
+    /// Decompresses one tile using its declared native pixel depth.
+    ///
+    /// Unlike [`Self::decode_raster`], this method does not convert to an
+    /// eight-bit [`PixelFormat`]. Byte-aligned 16-bit and 32-bit channels are
+    /// returned in their native planar/interleaved arrangement through
+    /// [`DecodedTile::bytes`]. Bit-packed layouts remain unsupported until
+    /// their row padding and bit order are independently verified.
+    pub fn decode_native_tile(
+        &mut self,
+        block: &Block,
+        packing: PixelPacking,
+    ) -> Result<Option<DecodedTile>> {
+        let parameters = block.parameters();
+        if u32::from(parameters.channel_count()) != packing.total_channels() {
+            return Err(Error::InvalidRaster {
+                reason: format!(
+                    "tile channel count {} does not match packing channel count {}",
+                    parameters.channel_count(),
+                    packing.total_channels()
+                ),
+            });
+        }
+        let bytes_per_pixel =
+            packing
+                .native_bytes_per_pixel()
+                .ok_or_else(|| Error::UnsupportedRaster {
+                    reason: format!(
+                        "native raster packing is not byte-aligned ({} bits/pixel)",
+                        packing.native_bits_per_pixel().unwrap_or(0)
+                    ),
+                })?;
+        let expected = u64::from(parameters.width())
+            .checked_mul(u64::from(parameters.height()))
+            .and_then(|pixels| pixels.checked_mul(u64::from(bytes_per_pixel)))
+            .ok_or(Error::OffsetOverflow)?;
+        self.decode_tile_with_size(block, expected)
+    }
+
+    fn decode_tile_with_size(
+        &mut self,
+        block: &Block,
+        expected: u64,
+    ) -> Result<Option<DecodedTile>> {
+        let Some(payload) = block.payload() else {
+            return Ok(None);
+        };
+        let limit = self.limits.max_decompressed_block_size();
+        if expected > limit {
+            return Err(Error::LimitExceeded {
+                resource: "decompressed block size",
+                value: expected,
+                limit,
+            });
+        }
+        let bytes = decode_zlib_range(
+            &mut self.reader,
+            self.file_size,
+            payload.offset(),
+            payload.compressed_size(),
+            expected,
+            limit,
+        )?;
+        Ok(Some(DecodedTile {
+            index: block.index(),
+            parameters: block.parameters(),
+            bytes,
+        }))
+    }
+
     /// Decodes and assembles a raster source into row-major pixels.
     pub fn decode_raster(
         &mut self,
@@ -3716,6 +3809,20 @@ mod tests {
             pixel_format(attributes.packing()).unwrap(),
             PixelFormat::GrayAlpha8
         );
+    }
+
+    #[test]
+    fn exposes_byte_aligned_high_depth_native_packing_without_downconversion() {
+        let attributes =
+            OffscreenAttributes::parse(&attributes_with_packing(1, 4, 5, 64, 16)).unwrap();
+        let packing = attributes.packing();
+        assert_eq!(packing.buffer_bits_per_channel(), Some(16));
+        assert_eq!(packing.native_bits_per_pixel(), Some(80));
+        assert_eq!(packing.native_bytes_per_pixel(), Some(10));
+        assert!(matches!(
+            pixel_format(packing),
+            Err(Error::UnsupportedRaster { .. })
+        ));
     }
 
     #[test]

@@ -140,6 +140,12 @@ pub enum Error {
         /// Human-readable details.
         reason: String,
     },
+    /// Brush styles, effectors, or linked graph data are inconsistent.
+    #[cfg(feature = "sqlite")]
+    InvalidBrush {
+        /// Human-readable details.
+        reason: String,
+    },
     /// Raster metadata or decoded pixels are structurally inconsistent.
     #[cfg(any(feature = "raster", feature = "write"))]
     InvalidRaster {
@@ -259,6 +265,10 @@ impl fmt::Display for Error {
             #[cfg(feature = "sqlite")]
             Self::InvalidVectorData { reason } => {
                 write!(formatter, "invalid vector data: {reason}")
+            }
+            #[cfg(feature = "sqlite")]
+            Self::InvalidBrush { reason } => {
+                write!(formatter, "invalid brush data: {reason}")
             }
             #[cfg(any(feature = "raster", feature = "write"))]
             Self::InvalidRaster { reason } => write!(formatter, "invalid raster data: {reason}"),

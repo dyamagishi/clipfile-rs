@@ -53,10 +53,10 @@
 
 ## ベクターstroke recordとbrush属性
 
-- 状態: 可変layoutのread model、座標・曲線・基本styleは実装済み、完全なbrush renderer/serializerは未解明
-- 観測: 2,757 stroke / 23,655 pointで、76/88/92/96-byte header、88/104/120-byte point、kind/curve flag相関を確認した。104/120-byte suffixは始点側pointに属する二次/三次Bezier controlである。main/sub RGB word、stroke opacity、base/effective brush ID、radius、frame fill style、point width/opacity factorの位置と値域を全件走査した。既存recordの完全cloneを末尾へ追加したbody、座標とbounding boxだけを平行移動したclone、全strokeを削除した空bodyは、ローカルの匿名検証ファイルでアプリから開けることを確認した。
-- 現在の扱い: `read_vector` は対応layoutの意味値を型付きで返し、未知layoutは境界だけ走査してraw保持する。point係数は効果からwidth/opacity factorと呼び、生のpressureとは断定しない。write側では92/88 layoutの全point平行移動、既存strokeのtemplate clone、stroke削除を提供する。未知fieldはbyte-for-byte保持し、render cacheとpreviewは再生成しない。
-- 次の調査: brush種類・形状・texture・混色と筆圧設定を1項目ずつ変え、brush IDの外部定義、spline補間、生pressureから各factorへの変換を確定する。templateなしのstroke/brush builderとcache再生成の可否も判断する。
+- 状態: 可変layoutのread model、座標・曲線、`BrushStyle`/effector graph/tip/texture/spray/fill参照、SVG cubic fittingと可変幅・不透明度保持まで実装済み。任意brushの完全なdab renderer/serializerは未解明。
+- 観測: 従来2,757 stroke / 23,655 pointに加え、実作業ファイルの2,454 spline stroke / 81,448 pointを走査した。92-byte header offset 76は203個の`BrushStyle.MainId`と全件一致し、size effectorから2本のbig-endian `f64` graphを解決できた。公式アプリの同一layer SVGとadapter（既定許容誤差0.45）は、ともに84 path / 649 cubic区間となり、縮小raster比較のRMSEは約0.0056だった。10 strokeの可変幅を確認し、可変不透明度、副色差、frame fillは0件だった。
+- 現在の扱い: `read_vector` は対応layoutの意味値を型付きで返し、未知layoutは境界だけ走査してraw保持する。`brush_style_id`からsize/opacity/flow等のeffectorとgraph、tip/texture/spray参照を解決する。SVGはsplineをcubicへfitし、可変幅を輪郭、可変不透明度を区間gradientで保持する。plain round tipをcore metadataから確認できる場合はbrush近似lossを付けない。write側の未知fieldはbyte-for-byte保持し、render cacheとpreviewは再生成しない。
+- 次の調査: pattern/texture/sprayを実際に使うfixture、副色混色、frame fill、高ビット深度rasterを各1項目差分で作り、dab配置・混色・fillの描画意味とnative channel byte orderを確定する。templateなしのstroke/brush builderとcache再生成の可否も判断する。
 
 ## 1-bitラスターデータ
 
@@ -64,7 +64,7 @@
 - 観測: 匿名の白マスクと部分マスクを `Gray8` として復号し、部分マスクの1タイルが `1 × 256 × 256 = 65,536` バイトであることを確認。
 - 追加観測: ラスターレイヤーの表現色をモノクロへ変更して保存しても、描画本体は従来どおり5チャンネル・各チャンネル8-bit、展開長327,680バイトだった。表現色だけでは1-bit格納にならない。
 - corpus集計: 匿名ローカル133ファイル・58,487 `Offscreen` 行のうち、1-bit packed monochrome metadataは45行、8-bit gray+alphaは177行だった。16/32-bit/channelは観測されなかった。
-- 現在の扱い: 8-bitの1チャンネルと独立alphaを持つ2チャンネルは対応済み。`PixelPacking` が1-bitまたはmonochromeを示す場合は推測展開せず `UnsupportedRaster` を返す。
+- 現在の扱い: 8-bitの1チャンネルと独立alphaを持つ2チャンネルは対応済み。byte-alignedな16/32-bit metadataは`decode_native_tile`で8-bit化せずnative byte列を取得できるが、実fixtureでのbyte order検証は未完了。`PixelPacking` が1-bitまたはmonochromeを示す場合は推測展開せず `UnsupportedRaster` を返す。
 - 次の調査: 確認済み45行のpayloadからbit順序、行パディング、alpha/value plane、既定色を比較する。
 
 ## `.cmc`

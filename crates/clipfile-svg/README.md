@@ -9,12 +9,18 @@ clipfile-svg = "0.1"
 ```
 
 It maps straight, quadratic Bezier, and cubic Bezier geometry directly to SVG
-paths. A valid one-point stroke becomes a visible `<circle>` using its primary
-color, effective width, and opacity. CLIP splines, per-point width/opacity,
-brush shapes, secondary-color metadata, and frame fills do not have a lossless
-mapping to a plain SVG stroke. The default policy uses documented
-approximations and returns an `SvgExportReport` with counts for every kind of
-loss and skip. Individual loss kinds can instead be configured as errors.
+paths, and fits CLIP spline samples to cubic Bezier paths with a configurable
+geometric tolerance. Per-point width becomes a fitted filled outline;
+per-point opacity becomes gradient-filled segments instead of a stroke-wide
+average. A valid one-point stroke becomes a visible `<circle>` using its
+primary color, effective width, and opacity.
+
+Brush shapes, secondary-color behavior, and frame fills do not always have a
+lossless mapping to plain SVG. Call `write_vector_with_brush_styles` with
+styles read from `Database::brush_styles` to distinguish confirmed hard round
+tips from brushes that still require texture/dab rendering. The default policy
+returns an `SvgExportReport` with counts for every remaining conversion and
+skip. Individual loss kinds can instead be configured as errors.
 
 The adapter writes XML incrementally through `quick-xml`. It does not build a
 complete SVG DOM or retain all converted strokes in memory; only the current
@@ -34,7 +40,9 @@ fn export(vector: &VectorData) -> Result<Vec<u8>, clipfile_svg::Error> {
         output,
         canvas,
         [vector],
-        SvgOptions::default().with_title("CLIP vector layer"),
+        SvgOptions::default()
+            .with_title("CLIP vector layer")
+            .with_spline_tolerance(0.45),
     )?;
     eprintln!(
         "wrote {} mark(s): {} paths and {} dots",
@@ -61,7 +69,7 @@ CLIP blend modes, masks, clipping, or transforms.
 summaries. Successful reports maintain both invariants:
 
 ```text
-strokes_seen    == marks_written + strokes_skipped
+strokes_seen    == strokes_written + strokes_skipped
 strokes_skipped == sum(skip_count)
 ```
 

@@ -29,6 +29,8 @@ Implemented:
 - bounded `CanvasPreview` PNG extraction; and
 - bounded, lossless vector stroke/point parsing with coordinates, Bezier
   controls, colors, brush radius, and width/opacity factors; and
+- linked brush styles, dynamics graphs, tip/texture/spray references, and
+  frame-fill metadata with raw forward-compatible payloads; and
 - validated vector-ruler references and typed metadata for all nine observed
   special-ruler table kinds; and
 - bounded UTF-8 text-layer content with opaque per-object attributes; and
@@ -42,7 +44,8 @@ Implemented:
 - optional validated time-lapse manager/record/blob chains with bounded reads
   and streaming decompression, plus streaming internal WebP frame indexing; and
 - optional `Offscreen.Attribute`, zlib tile, and RGBA/grayscale/gray-alpha
-  raster decoding, with opt-in image-rs conversion; and
+  raster decoding, native byte-aligned high-depth tile access without 8-bit
+  conversion, and opt-in image-rs conversion; and
 - opt-in validated container rewriting with editable SQLite metadata,
   byte-preserving external bodies, repaired absolute offsets, CSP-compatible
   block checksums, plain-raster-layer template cloning, text-object lifecycle,

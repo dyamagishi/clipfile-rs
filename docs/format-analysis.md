@@ -199,6 +199,10 @@ Rustの高レベルモデルでは5サンプル合計2,772件の `Layer` を読�
 
 stroke flagはnormal/ruler/frameとstraight/quadratic/cubic/splineを独立に表す。point先頭は倍精度XY、続いてbounding boxとpoint flagを持つ。104-byte recordの末尾16 byte、120-byte recordの末尾32 byteは、それぞれ始点側pointに属する二次/三次Bezier controlとして実曲線と一致した。headerのmain/sub RGB 3語、stroke opacity、base/effective brush ID、normal/frame brush radius、frame fill style、pointのwidth/opacity factorも全件で有限かつ対応値域に収まった。RGBはhigh byteを8-bit値として利用できるが、lower bit patternを失わないようraw 32-bit wordも保持する。width/opacity factorは生のtablet pressureとは断定しない。
 
+追加の実作業アニメーションファイルでは42 vector layer、2,454 stroke、81,448 pointを確認し、全strokeが92/76/88/88 layoutのsplineだった。92-byte normal headerのoffset 76は737～939の203値を取り、`BrushStyle.MainId` 203行と全件一致した。`BrushStyleManager`は最初のstyle 737とgraph 8を参照し、size effectorの180行がgraph 8、6行がgraph 9を参照した。graph payloadは16-byte strideのbig-endian `f64` XYで宣言件数と完全一致した。この相関に基づきoffset 76を`brush_style_id`として公開する。
+
+同ファイルの203 brush styleはすべてtip mipmap/pattern/texture/spray/fixed-spray参照なし、hardness 1、thickness 1であり、公式SVGのround strokeと一致した。副色は全strokeで主色と同値、frame stroke/fill styleは0件だったため、副色混色とframe fillの描画意味はこのfixture単独では追加確定していない。
+
 公開read APIは宣言境界が成立する未知layoutをraw保持し、既知header/kindとpoint/curve相関を満たす場合だけ意味getterを有効にする。既存stroke recordの完全clone、座標とbounding boxだけを平行移動したclone、全strokeを削除した空bodyは、匿名ローカル出力をアプリで開き直せた。header末尾の不透明4-byte値をclone元と同じまま重複させても同じ検証条件では受理された。ただし同レイヤーの通常描画Mipmap、thumbnail、previewはvector bodyと別のcacheであり、stroke編集だけでは再生成されない。公開write APIは対応layoutの平行移動・template clone・削除に限定し、未知fieldをbyte-for-byte保持する。別layoutやbrushのゼロ生成は拒否する。
 
 公開参考コーパスの定規サンプルは18レイヤーを持ち、8件が `RulerVectorIndex` から同じlayer・canvasの `VectorObjectList` を参照し、10件が `SpecialRulerManager` を参照した。managerの9個の `First*` と各定規表の `NextIndex` をたどると、parallel 1、curve parallel 1、multiple curve 1、radial line 1、radial curve 1、concentric circle 1、guide 7、perspective 1、symmetry 2の計16定規へ欠落・循環なく到達した。

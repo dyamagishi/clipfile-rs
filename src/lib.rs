@@ -11,6 +11,8 @@
 #[cfg(feature = "animation")]
 mod animation;
 #[cfg(feature = "sqlite")]
+mod brush;
+#[cfg(feature = "sqlite")]
 mod cmc;
 mod container;
 #[cfg(feature = "sqlite")]
@@ -48,6 +50,11 @@ pub use animation::{
 pub use animation::{
     AnimationCurveKeyframeInsert, AnimationTrackCloneSummary, AnimationTrackRemovalSummary,
     ImageCelTrackCloneOptions, ImageCelTrackKeyframe,
+};
+#[cfg(feature = "sqlite")]
+pub use brush::{
+    BrushEffector, BrushEffectorGraph, BrushEffectorPoint, BrushFixedSpray, BrushPatternImage,
+    BrushPatternStyle, BrushStyle, BrushStyleManager, FillStyle,
 };
 #[cfg(feature = "sqlite")]
 pub use cmc::{CmcFile, CmcNode};

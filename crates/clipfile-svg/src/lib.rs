@@ -12,7 +12,7 @@ use std::{
     ops::AddAssign,
 };
 
-use clipfile::{VectorCurveKind, VectorData, VectorPoint, VectorStroke};
+use clipfile::{BrushStyle, VectorCurveKind, VectorData, VectorPoint, VectorStroke};
 use quick_xml::{
     Writer,
     events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event},
@@ -38,6 +38,8 @@ pub enum Error {
     },
     /// Group opacity must be finite and in the inclusive range `0.0..=1.0`.
     InvalidGroupOpacity { opacity: f64 },
+    /// Spline fitting tolerance must be finite and greater than zero.
+    InvalidSplineTolerance { tolerance: f64 },
     /// A title contains a character disallowed by XML 1.0.
     InvalidXmlText,
     /// A group identifier is empty or is not valid XML 1.0 text.
@@ -76,6 +78,9 @@ impl fmt::Display for Error {
             ),
             Self::InvalidGroupOpacity { opacity } => {
                 write!(formatter, "invalid SVG group opacity {opacity}")
+            }
+            Self::InvalidSplineTolerance { tolerance } => {
+                write!(formatter, "invalid spline fitting tolerance {tolerance}")
             }
             Self::InvalidXmlText => write!(formatter, "SVG text contains invalid XML 1.0 text"),
             Self::InvalidGroupId => write!(formatter, "invalid SVG group identifier"),
@@ -220,12 +225,24 @@ impl SvgViewport {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub enum SvgLossKind {
-    /// CLIP spline interpolation was replaced with straight segments.
+    /// Legacy policy key for CLIP splines replaced with straight segments.
+    ///
+    /// The current writer emits [`Self::SplineToCubicApproximation`] instead.
     SplineToPolyline,
-    /// Per-point width factors were replaced with one average width.
+    /// CLIP spline samples were fitted with cubic Bezier segments.
+    SplineToCubicApproximation,
+    /// Legacy policy key for per-point widths replaced with one average width.
+    ///
+    /// The current writer emits [`Self::VariableWidthOutlined`] instead.
     VariableWidthAveraged,
-    /// Per-point opacity factors were replaced with one average opacity.
+    /// Per-point width factors were preserved as a filled SVG outline.
+    VariableWidthOutlined,
+    /// Legacy policy key for per-point opacity replaced with one average.
+    ///
+    /// The current writer emits [`Self::VariableOpacitySegmented`] instead.
     VariableOpacityAveraged,
+    /// Per-point opacity factors were preserved as gradient-filled segments.
+    VariableOpacitySegmented,
     /// A CLIP brush shape or texture was replaced with a round SVG stroke.
     BrushToRoundStroke,
     /// The secondary brush color was not represented.
@@ -245,10 +262,13 @@ pub enum SvgLossKind {
 }
 
 impl SvgLossKind {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 14] = [
         Self::SplineToPolyline,
+        Self::SplineToCubicApproximation,
         Self::VariableWidthAveraged,
+        Self::VariableWidthOutlined,
         Self::VariableOpacityAveraged,
+        Self::VariableOpacitySegmented,
         Self::BrushToRoundStroke,
         Self::SecondaryColorIgnored,
         Self::FrameFillIgnored,
@@ -262,16 +282,19 @@ impl SvgLossKind {
     const fn index(self) -> usize {
         match self {
             Self::SplineToPolyline => 0,
-            Self::VariableWidthAveraged => 1,
-            Self::VariableOpacityAveraged => 2,
-            Self::BrushToRoundStroke => 3,
-            Self::SecondaryColorIgnored => 4,
-            Self::FrameFillIgnored => 5,
-            Self::MissingWidthFallback => 6,
-            Self::MissingWidthFactorFallback => 7,
-            Self::MissingOpacityFactorFallback => 8,
-            Self::BezierControlsToLine => 9,
-            Self::UnsupportedStrokeSkipped => 10,
+            Self::SplineToCubicApproximation => 1,
+            Self::VariableWidthAveraged => 2,
+            Self::VariableWidthOutlined => 3,
+            Self::VariableOpacityAveraged => 4,
+            Self::VariableOpacitySegmented => 5,
+            Self::BrushToRoundStroke => 6,
+            Self::SecondaryColorIgnored => 7,
+            Self::FrameFillIgnored => 8,
+            Self::MissingWidthFallback => 9,
+            Self::MissingWidthFactorFallback => 10,
+            Self::MissingOpacityFactorFallback => 11,
+            Self::BezierControlsToLine => 12,
+            Self::UnsupportedStrokeSkipped => 13,
         }
     }
 
@@ -280,8 +303,11 @@ impl SvgLossKind {
     pub const fn severity(self) -> SvgLossSeverity {
         match self {
             Self::SplineToPolyline
+            | Self::SplineToCubicApproximation
             | Self::VariableWidthAveraged
+            | Self::VariableWidthOutlined
             | Self::VariableOpacityAveraged
+            | Self::VariableOpacitySegmented
             | Self::BrushToRoundStroke => SvgLossSeverity::Approximation,
             Self::SecondaryColorIgnored
             | Self::FrameFillIgnored
@@ -298,8 +324,15 @@ impl fmt::Display for SvgLossKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let description = match self {
             Self::SplineToPolyline => "CLIP spline approximated by a polyline",
+            Self::SplineToCubicApproximation => {
+                "CLIP spline samples fitted with cubic Bezier segments"
+            }
             Self::VariableWidthAveraged => "variable width averaged",
+            Self::VariableWidthOutlined => "variable width preserved as a fitted outline",
             Self::VariableOpacityAveraged => "variable opacity averaged",
+            Self::VariableOpacitySegmented => {
+                "variable opacity preserved as gradient-filled segments"
+            }
             Self::BrushToRoundStroke => "CLIP brush approximated by a round stroke",
             Self::SecondaryColorIgnored => "secondary color metadata not represented",
             Self::FrameFillIgnored => "frame fill style ignored",
@@ -387,6 +420,7 @@ pub enum SvgLossHandling {
 pub struct SvgOptions {
     title: Option<String>,
     group_opacity: f64,
+    spline_tolerance: f64,
     loss_handling: [SvgLossHandling; SvgLossKind::ALL.len()],
 }
 
@@ -395,6 +429,7 @@ impl Default for SvgOptions {
         Self {
             title: None,
             group_opacity: 1.0,
+            spline_tolerance: 0.45,
             loss_handling: [SvgLossHandling::Allow; SvgLossKind::ALL.len()],
         }
     }
@@ -414,6 +449,16 @@ impl SvgOptions {
     #[must_use]
     pub const fn with_group_opacity(mut self, opacity: f64) -> Self {
         self.group_opacity = opacity;
+        self
+    }
+
+    /// Sets the maximum geometric fitting error for CLIP spline samples.
+    ///
+    /// The value is measured in SVG user units and must be finite and greater
+    /// than zero. Smaller values retain more cubic Bezier segments.
+    #[must_use]
+    pub const fn with_spline_tolerance(mut self, tolerance: f64) -> Self {
+        self.spline_tolerance = tolerance;
         self
     }
 
@@ -455,6 +500,12 @@ impl SvgOptions {
         self.group_opacity
     }
 
+    /// Maximum geometric fitting error for CLIP spline samples.
+    #[must_use]
+    pub const fn spline_tolerance(&self) -> f64 {
+        self.spline_tolerance
+    }
+
     /// Current handling for one loss category.
     #[must_use]
     pub const fn loss_handling(&self, kind: SvgLossKind) -> SvgLossHandling {
@@ -464,14 +515,15 @@ impl SvgOptions {
 
 /// Aggregate counts from one SVG conversion.
 ///
-/// Counts are bounded by the number of input strokes and loss categories, so
-/// the report does not grow with document size.
+/// The report stores aggregate counters rather than per-stroke entries, so its
+/// memory use does not grow with document size.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SvgExportReport {
     vector_objects: u64,
     strokes_seen: u64,
     paths_written: u64,
     dots_written: u64,
+    strokes_written: u64,
     strokes_skipped: u64,
     losses: [u64; SvgLossKind::ALL.len()],
     skips: [u64; SvgSkipKind::ALL.len()],
@@ -484,6 +536,7 @@ impl Default for SvgExportReport {
             strokes_seen: 0,
             paths_written: 0,
             dots_written: 0,
+            strokes_written: 0,
             strokes_skipped: 0,
             losses: [0; SvgLossKind::ALL.len()],
             skips: [0; SvgSkipKind::ALL.len()],
@@ -516,7 +569,7 @@ impl SvgExportReport {
         self.dots_written
     }
 
-    /// Total number of paths and one-point circles written.
+    /// Total number of SVG paths and one-point circles written.
     #[must_use]
     pub const fn marks_written(&self) -> u64 {
         self.paths_written.saturating_add(self.dots_written)
@@ -525,7 +578,7 @@ impl SvgExportReport {
     /// Number of input strokes represented by an SVG mark.
     #[must_use]
     pub const fn strokes_written(&self) -> u64 {
-        self.marks_written()
+        self.strokes_written
     }
 
     /// Number of empty or unsupported strokes skipped.
@@ -562,7 +615,7 @@ impl SvgExportReport {
     #[must_use]
     pub fn is_consistent(&self) -> bool {
         let classified_skips = self.skips.iter().copied().fold(0_u64, u64::saturating_add);
-        self.strokes_seen == self.marks_written().saturating_add(self.strokes_skipped)
+        self.strokes_seen == self.strokes_written.saturating_add(self.strokes_skipped)
             && self.strokes_skipped == classified_skips
     }
 
@@ -588,6 +641,7 @@ impl SvgExportReport {
         self.strokes_seen = self.strokes_seen.saturating_add(other.strokes_seen);
         self.paths_written = self.paths_written.saturating_add(other.paths_written);
         self.dots_written = self.dots_written.saturating_add(other.dots_written);
+        self.strokes_written = self.strokes_written.saturating_add(other.strokes_written);
         self.strokes_skipped = self.strokes_skipped.saturating_add(other.strokes_skipped);
         for (target, source) in self.losses.iter_mut().zip(other.losses) {
             *target = target.saturating_add(source);
@@ -734,6 +788,23 @@ impl<W: Write> SvgWriter<W> {
         Ok(())
     }
 
+    /// Writes a vector body while resolving its referenced core brush styles.
+    pub fn write_vector_with_brush_styles<'a>(
+        &mut self,
+        vector: &VectorData,
+        mut resolve: impl FnMut(u32) -> Option<&'a BrushStyle>,
+    ) -> Result<()> {
+        self.report.vector_objects += 1;
+        for stroke in vector.strokes() {
+            let brush = stroke
+                .style()
+                .and_then(|style| style.brush_style_id())
+                .and_then(&mut resolve);
+            self.write_stroke_with_brush_style(stroke, brush)?;
+        }
+        Ok(())
+    }
+
     /// Writes a balanced nested SVG group through a callback.
     ///
     /// The callback may use an application error type that implements
@@ -801,6 +872,20 @@ impl<W: Write> SvgWriter<W> {
 
     /// Writes one vector stroke, or records that it was skipped.
     pub fn write_stroke(&mut self, stroke: VectorStroke<'_>) -> Result<()> {
+        self.write_stroke_with_brush_style(stroke, None)
+    }
+
+    /// Writes one vector stroke with its resolved core brush style.
+    ///
+    /// Supplying the matching [`BrushStyle`] lets the adapter distinguish a
+    /// plain hard round tip from brush shapes that still require a rendered
+    /// texture or dab sequence. A missing or mismatched style remains a
+    /// reported [`SvgLossKind::BrushToRoundStroke`] conversion.
+    pub fn write_stroke_with_brush_style(
+        &mut self,
+        stroke: VectorStroke<'_>,
+        brush_style: Option<&BrushStyle>,
+    ) -> Result<()> {
         let stroke_index = self.report.strokes_seen;
         self.report.strokes_seen += 1;
 
@@ -820,7 +905,7 @@ impl<W: Write> SvgWriter<W> {
             }
         };
 
-        let built = build_stroke(stroke, curve);
+        let built = build_stroke(stroke, curve, self.options.spline_tolerance());
         if built.incomplete_geometry {
             return self.skip_unsupported_stroke(stroke_index, SvgSkipKind::IncompleteGeometry);
         }
@@ -831,16 +916,16 @@ impl<W: Write> SvgWriter<W> {
 
         let mut losses = StrokeLosses::default();
         if approximated_spline && matches!(built.mark, BuiltMark::Path(_)) {
-            losses.add(SvgLossKind::SplineToPolyline);
+            losses.add(SvgLossKind::SplineToCubicApproximation);
         }
         if built.bezier_fallback {
             losses.add(SvgLossKind::BezierControlsToLine);
         }
         if built.width.variable {
-            losses.add(SvgLossKind::VariableWidthAveraged);
+            losses.add(SvgLossKind::VariableWidthOutlined);
         }
         if built.opacity.variable {
-            losses.add(SvgLossKind::VariableOpacityAveraged);
+            losses.add(SvgLossKind::VariableOpacitySegmented);
         }
         if built.width.incomplete {
             losses.add(SvgLossKind::MissingWidthFactorFallback);
@@ -852,7 +937,12 @@ impl<W: Write> SvgWriter<W> {
         let style = stroke
             .style()
             .expect("a semantically supported vector stroke has a style");
-        losses.add(SvgLossKind::BrushToRoundStroke);
+        let resolved_brush_is_round = style.brush_style_id().is_some_and(|id| {
+            brush_style.is_some_and(|brush| brush.id() == id && brush.is_plain_round_tip())
+        });
+        if !resolved_brush_is_round {
+            losses.add(SvgLossKind::BrushToRoundStroke);
+        }
         let color = style.main_color().rgb_8bit();
         if style.sub_color().rgb_8bit() != color {
             losses.add(SvgLossKind::SecondaryColorIgnored);
@@ -867,8 +957,17 @@ impl<W: Write> SvgWriter<W> {
                 1.0
             }
         };
-        let stroke_width = finite_svg_product(nominal_width, built.width.value, "stroke width")?;
-        let stroke_opacity = (style.opacity() * built.opacity.value).clamp(0.0, 1.0);
+        let stroke_width = if built.width.variable {
+            nominal_width
+        } else {
+            finite_svg_product(nominal_width, built.width.value, "stroke width")?
+        };
+        let stroke_opacity = if built.opacity.variable {
+            style.opacity()
+        } else {
+            style.opacity() * built.opacity.value
+        }
+        .clamp(0.0, 1.0);
         self.apply_losses(&losses, stroke_index)?;
 
         let rendered_style = RenderStyle {
@@ -876,10 +975,29 @@ impl<W: Write> SvgWriter<W> {
             width: stroke_width.max(0.0),
             opacity: stroke_opacity,
         };
-        match write_mark(&mut self.writer, &built.mark, rendered_style)? {
-            WrittenMark::Path => self.report.paths_written += 1,
+        let written = if built.opacity.variable && matches!(built.mark, BuiltMark::Path(_)) {
+            write_variable_opacity_segments(
+                &mut self.writer,
+                &built.outline_samples,
+                nominal_width,
+                rendered_style,
+                stroke_index,
+            )?
+        } else if built.width.variable && matches!(built.mark, BuiltMark::Path(_)) {
+            let outline = build_variable_width_outline(
+                &built.outline_samples,
+                nominal_width,
+                self.options.spline_tolerance(),
+            )?;
+            write_filled_path(&mut self.writer, &outline, rendered_style)?
+        } else {
+            write_mark(&mut self.writer, &built.mark, rendered_style)?
+        };
+        match written {
+            WrittenMark::Path(count) => self.report.paths_written += count,
             WrittenMark::Dot => self.report.dots_written += 1,
         }
+        self.report.strokes_written += 1;
         Ok(())
     }
 
@@ -945,6 +1063,11 @@ fn validate_options(options: &SvgOptions) -> Result<()> {
     if !options.group_opacity.is_finite() || !(0.0..=1.0).contains(&options.group_opacity) {
         return Err(Error::InvalidGroupOpacity {
             opacity: options.group_opacity,
+        });
+    }
+    if !options.spline_tolerance.is_finite() || options.spline_tolerance <= 0.0 {
+        return Err(Error::InvalidSplineTolerance {
+            tolerance: options.spline_tolerance,
         });
     }
     if options
@@ -1018,6 +1141,7 @@ struct PointData {
     position: Coordinate,
     controls: [Option<Coordinate>; 2],
     control_count: u8,
+    flags: u32,
 }
 
 impl PointData {
@@ -1041,6 +1165,7 @@ impl PointData {
             },
             controls,
             control_count,
+            flags: point.flags().map_or(0, |flags| flags.raw()),
         })
     }
 }
@@ -1106,24 +1231,46 @@ struct BuiltStroke {
     mark: BuiltMark,
     width: FactorApproximation,
     opacity: FactorApproximation,
+    outline_samples: Vec<OutlineSample>,
     incomplete_geometry: bool,
     bezier_fallback: bool,
 }
 
-fn build_stroke(stroke: VectorStroke<'_>, curve: CurveMode) -> BuiltStroke {
-    let mut path = PathBuilder::default();
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct OutlineSample {
+    position: Coordinate,
+    width_factor: Option<f32>,
+    opacity_factor: Option<f32>,
+    flags: u32,
+}
+
+fn build_stroke(stroke: VectorStroke<'_>, curve: CurveMode, spline_tolerance: f64) -> BuiltStroke {
+    let mut path = PathBuilder::new(spline_tolerance);
     let mut width = FactorAccumulator::default();
     let mut opacity = FactorAccumulator::default();
+    let mut outline_samples = Vec::new();
     for point in stroke.points() {
-        width.push(point.width_factor());
-        opacity.push(point.opacity_factor());
-        path.push(PointData::from_vector(point), curve);
+        let width_factor = point.width_factor();
+        width.push(width_factor);
+        let opacity_factor = point.opacity_factor();
+        opacity.push(opacity_factor);
+        let point_data = PointData::from_vector(point);
+        if let Some(point_data) = point_data {
+            outline_samples.push(OutlineSample {
+                position: point_data.position,
+                width_factor,
+                opacity_factor,
+                flags: point_data.flags,
+            });
+        }
+        path.push(point_data, curve);
     }
     let mark = path.finish(stroke.is_closed(), curve);
     BuiltStroke {
         mark,
         width: width.finish(),
         opacity: opacity.finish(),
+        outline_samples,
         incomplete_geometry: path.incomplete_geometry,
         bezier_fallback: path.bezier_fallback,
     }
@@ -1136,17 +1283,38 @@ enum BuiltMark {
     Path(String),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct PathBuilder {
     data: String,
     first: Option<PointData>,
     previous: Option<PointData>,
+    spline_points: Vec<PointData>,
+    spline_tolerance: f64,
     segment_count: u64,
     incomplete_geometry: bool,
     bezier_fallback: bool,
 }
 
+impl Default for PathBuilder {
+    fn default() -> Self {
+        Self::new(1.0)
+    }
+}
+
 impl PathBuilder {
+    fn new(spline_tolerance: f64) -> Self {
+        Self {
+            data: String::new(),
+            first: None,
+            previous: None,
+            spline_points: Vec::new(),
+            spline_tolerance,
+            segment_count: 0,
+            incomplete_geometry: false,
+            bezier_fallback: false,
+        }
+    }
+
     fn push(&mut self, point: Option<PointData>, curve: CurveMode) {
         let Some(point) = point else {
             self.incomplete_geometry = true;
@@ -1155,6 +1323,11 @@ impl PathBuilder {
         };
         if self.first.is_none() {
             self.first = Some(point);
+        }
+        if curve == CurveMode::Spline {
+            self.spline_points.push(point);
+            self.previous = Some(point);
+            return;
         }
         if let Some(previous) = self.previous {
             self.bezier_fallback |= append_segment(&mut self.data, previous, point.position, curve);
@@ -1166,6 +1339,9 @@ impl PathBuilder {
     }
 
     fn finish(&mut self, closed: bool, curve: CurveMode) -> BuiltMark {
+        if curve == CurveMode::Spline {
+            return build_spline_mark(&self.spline_points, closed, self.spline_tolerance);
+        }
         if self.segment_count == 0 {
             return self
                 .first
@@ -1185,6 +1361,383 @@ impl PathBuilder {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+struct CubicSegment {
+    first_control: Coordinate,
+    second_control: Coordinate,
+    end: Coordinate,
+}
+
+fn build_spline_mark(points: &[PointData], closed: bool, tolerance: f64) -> BuiltMark {
+    let mut start = 0;
+    let mut end = points.len();
+    if points.first().is_some_and(|point| point.flags == 0x10) {
+        start += 1;
+    }
+    if start < end && points.last().is_some_and(|point| point.flags == 0x20) {
+        end -= 1;
+    }
+
+    let mut positions = Vec::with_capacity(end.saturating_sub(start) + usize::from(closed));
+    for point in &points[start..end] {
+        if positions.last().copied() != Some(point.position) {
+            positions.push(point.position);
+        }
+    }
+    match positions.as_slice() {
+        [] => return BuiltMark::Empty,
+        [point] => return BuiltMark::Dot(*point),
+        _ => {}
+    }
+    if closed && positions.first() != positions.last() {
+        positions.push(positions[0]);
+    }
+
+    let segments = fit_cubic_beziers(&positions, tolerance);
+    let mut data = String::new();
+    push_pair_command(&mut data, 'M', positions[0]);
+    for segment in segments {
+        write!(
+            data,
+            " C{} {} {} {} {} {}",
+            display_number(segment.first_control.x),
+            display_number(segment.first_control.y),
+            display_number(segment.second_control.x),
+            display_number(segment.second_control.y),
+            display_number(segment.end.x),
+            display_number(segment.end.y),
+        )
+        .expect("writing to a String cannot fail");
+    }
+    if closed {
+        data.push_str(" Z");
+    }
+    BuiltMark::Path(data)
+}
+
+fn fit_cubic_beziers(points: &[Coordinate], tolerance: f64) -> Vec<CubicSegment> {
+    debug_assert!(points.len() >= 2);
+    let left_tangent =
+        normalized(subtract(points[1], points[0])).unwrap_or(Coordinate { x: 1.0, y: 0.0 });
+    let right_tangent = normalized(subtract(points[points.len() - 2], points[points.len() - 1]))
+        .unwrap_or(Coordinate { x: -1.0, y: 0.0 });
+    let mut segments = Vec::new();
+    fit_cubic_range(
+        points,
+        left_tangent,
+        right_tangent,
+        tolerance * tolerance,
+        0,
+        &mut segments,
+    );
+    segments
+}
+
+fn fit_cubic_range(
+    points: &[Coordinate],
+    left_tangent: Coordinate,
+    right_tangent: Coordinate,
+    error_squared: f64,
+    depth: u32,
+    segments: &mut Vec<CubicSegment>,
+) {
+    if points.len() == 2 {
+        segments.push(line_cubic(
+            points[0],
+            points[1],
+            left_tangent,
+            right_tangent,
+        ));
+        return;
+    }
+    if depth >= 32 {
+        for pair in points.windows(2) {
+            let left = normalized(subtract(pair[1], pair[0])).unwrap_or(left_tangent);
+            segments.push(line_cubic(pair[0], pair[1], left, negate(left)));
+        }
+        return;
+    }
+
+    let mut parameters = chord_length_parameters(points);
+    let mut cubic = generate_cubic(points, &parameters, left_tangent, right_tangent);
+    let (mut maximum_error, mut split) = maximum_fitting_error(points, &parameters, cubic);
+    if maximum_error <= error_squared {
+        segments.push(cubic);
+        return;
+    }
+
+    if maximum_error <= error_squared * 4.0 {
+        for _ in 0..4 {
+            let Some(reparameterized) = reparameterize(points, &parameters, cubic) else {
+                break;
+            };
+            parameters = reparameterized;
+            cubic = generate_cubic(points, &parameters, left_tangent, right_tangent);
+            (maximum_error, split) = maximum_fitting_error(points, &parameters, cubic);
+            if maximum_error <= error_squared {
+                segments.push(cubic);
+                return;
+            }
+        }
+    }
+
+    split = split.clamp(1, points.len() - 2);
+    let center_tangent = normalized(subtract(points[split - 1], points[split + 1]))
+        .or_else(|| normalized(subtract(points[split - 1], points[split])))
+        .unwrap_or(right_tangent);
+    fit_cubic_range(
+        &points[..=split],
+        left_tangent,
+        center_tangent,
+        error_squared,
+        depth + 1,
+        segments,
+    );
+    fit_cubic_range(
+        &points[split..],
+        negate(center_tangent),
+        right_tangent,
+        error_squared,
+        depth + 1,
+        segments,
+    );
+}
+
+fn line_cubic(
+    start: Coordinate,
+    end: Coordinate,
+    left_tangent: Coordinate,
+    right_tangent: Coordinate,
+) -> CubicSegment {
+    let distance = length(subtract(end, start)) / 3.0;
+    CubicSegment {
+        first_control: add(start, scale(left_tangent, distance)),
+        second_control: add(end, scale(right_tangent, distance)),
+        end,
+    }
+}
+
+fn chord_length_parameters(points: &[Coordinate]) -> Vec<f64> {
+    let mut parameters = Vec::with_capacity(points.len());
+    parameters.push(0.0);
+    for pair in points.windows(2) {
+        parameters.push(parameters.last().copied().unwrap() + length(subtract(pair[1], pair[0])));
+    }
+    let total = parameters.last().copied().unwrap_or(0.0);
+    if total > 0.0 {
+        for parameter in &mut parameters[1..] {
+            *parameter /= total;
+        }
+    } else {
+        let denominator = (points.len() - 1) as f64;
+        for (index, parameter) in parameters.iter_mut().enumerate() {
+            *parameter = index as f64 / denominator;
+        }
+    }
+    parameters
+}
+
+fn generate_cubic(
+    points: &[Coordinate],
+    parameters: &[f64],
+    left_tangent: Coordinate,
+    right_tangent: Coordinate,
+) -> CubicSegment {
+    let start = points[0];
+    let end = points[points.len() - 1];
+    let mut c00 = 0.0;
+    let mut c01 = 0.0;
+    let mut c11 = 0.0;
+    let mut x0 = 0.0;
+    let mut x1 = 0.0;
+
+    for (&point, &u) in points.iter().zip(parameters) {
+        let one_minus = 1.0 - u;
+        let b0 = one_minus * one_minus * one_minus;
+        let b1 = 3.0 * u * one_minus * one_minus;
+        let b2 = 3.0 * u * u * one_minus;
+        let b3 = u * u * u;
+        let a1 = scale(left_tangent, b1);
+        let a2 = scale(right_tangent, b2);
+        let base = add(scale(start, b0 + b1), scale(end, b2 + b3));
+        let residual = subtract(point, base);
+        c00 += dot(a1, a1);
+        c01 += dot(a1, a2);
+        c11 += dot(a2, a2);
+        x0 += dot(a1, residual);
+        x1 += dot(a2, residual);
+    }
+
+    let determinant = c00 * c11 - c01 * c01;
+    let (mut alpha_left, mut alpha_right) = if determinant.abs() > 1.0e-12 {
+        (
+            (x0 * c11 - x1 * c01) / determinant,
+            (c00 * x1 - c01 * x0) / determinant,
+        )
+    } else {
+        (0.0, 0.0)
+    };
+    let segment_length = length(subtract(end, start));
+    let minimum_alpha = segment_length * 1.0e-6;
+    if !alpha_left.is_finite()
+        || !alpha_right.is_finite()
+        || alpha_left < minimum_alpha
+        || alpha_right < minimum_alpha
+    {
+        alpha_left = segment_length / 3.0;
+        alpha_right = segment_length / 3.0;
+    }
+
+    CubicSegment {
+        first_control: add(start, scale(left_tangent, alpha_left)),
+        second_control: add(end, scale(right_tangent, alpha_right)),
+        end,
+    }
+}
+
+fn maximum_fitting_error(
+    points: &[Coordinate],
+    parameters: &[f64],
+    cubic: CubicSegment,
+) -> (f64, usize) {
+    let start = points[0];
+    let mut maximum = 0.0;
+    let mut split = points.len() / 2;
+    for index in 1..points.len() - 1 {
+        let fitted = evaluate_cubic(start, cubic, parameters[index]);
+        let error = length_squared(subtract(fitted, points[index]));
+        if error >= maximum {
+            maximum = error;
+            split = index;
+        }
+    }
+    (maximum, split)
+}
+
+fn reparameterize(
+    points: &[Coordinate],
+    parameters: &[f64],
+    cubic: CubicSegment,
+) -> Option<Vec<f64>> {
+    let start = points[0];
+    let mut result = Vec::with_capacity(points.len());
+    let mut previous = -1.0;
+    for (&point, &parameter) in points.iter().zip(parameters) {
+        let value = newton_parameter(start, cubic, point, parameter).clamp(0.0, 1.0);
+        if value <= previous {
+            return None;
+        }
+        result.push(value);
+        previous = value;
+    }
+    Some(result)
+}
+
+fn newton_parameter(
+    start: Coordinate,
+    cubic: CubicSegment,
+    point: Coordinate,
+    parameter: f64,
+) -> f64 {
+    let controls = [start, cubic.first_control, cubic.second_control, cubic.end];
+    let first = [
+        scale(subtract(controls[1], controls[0]), 3.0),
+        scale(subtract(controls[2], controls[1]), 3.0),
+        scale(subtract(controls[3], controls[2]), 3.0),
+    ];
+    let second = [
+        scale(subtract(first[1], first[0]), 2.0),
+        scale(subtract(first[2], first[1]), 2.0),
+    ];
+    let value = evaluate_cubic(start, cubic, parameter);
+    let first_derivative = evaluate_quadratic(first, parameter);
+    let second_derivative = evaluate_linear(second, parameter);
+    let difference = subtract(value, point);
+    let denominator = dot(first_derivative, first_derivative) + dot(difference, second_derivative);
+    if denominator.abs() <= 1.0e-12 {
+        parameter
+    } else {
+        parameter - dot(difference, first_derivative) / denominator
+    }
+}
+
+fn evaluate_cubic(start: Coordinate, cubic: CubicSegment, parameter: f64) -> Coordinate {
+    let one_minus = 1.0 - parameter;
+    add(
+        add(
+            scale(start, one_minus * one_minus * one_minus),
+            scale(cubic.first_control, 3.0 * one_minus * one_minus * parameter),
+        ),
+        add(
+            scale(
+                cubic.second_control,
+                3.0 * one_minus * parameter * parameter,
+            ),
+            scale(cubic.end, parameter * parameter * parameter),
+        ),
+    )
+}
+
+fn evaluate_quadratic(controls: [Coordinate; 3], parameter: f64) -> Coordinate {
+    let one_minus = 1.0 - parameter;
+    add(
+        add(
+            scale(controls[0], one_minus * one_minus),
+            scale(controls[1], 2.0 * one_minus * parameter),
+        ),
+        scale(controls[2], parameter * parameter),
+    )
+}
+
+fn evaluate_linear(controls: [Coordinate; 2], parameter: f64) -> Coordinate {
+    add(
+        scale(controls[0], 1.0 - parameter),
+        scale(controls[1], parameter),
+    )
+}
+
+fn add(left: Coordinate, right: Coordinate) -> Coordinate {
+    Coordinate {
+        x: left.x + right.x,
+        y: left.y + right.y,
+    }
+}
+
+fn subtract(left: Coordinate, right: Coordinate) -> Coordinate {
+    Coordinate {
+        x: left.x - right.x,
+        y: left.y - right.y,
+    }
+}
+
+fn scale(value: Coordinate, factor: f64) -> Coordinate {
+    Coordinate {
+        x: value.x * factor,
+        y: value.y * factor,
+    }
+}
+
+fn negate(value: Coordinate) -> Coordinate {
+    scale(value, -1.0)
+}
+
+fn dot(left: Coordinate, right: Coordinate) -> f64 {
+    left.x * right.x + left.y * right.y
+}
+
+fn length_squared(value: Coordinate) -> f64 {
+    dot(value, value)
+}
+
+fn length(value: Coordinate) -> f64 {
+    length_squared(value).sqrt()
+}
+
+fn normalized(value: Coordinate) -> Option<Coordinate> {
+    let magnitude = length(value);
+    (magnitude > 1.0e-12).then(|| scale(value, 1.0 / magnitude))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct RenderStyle {
     color: [u8; 3],
     width: f64,
@@ -1193,7 +1746,7 @@ struct RenderStyle {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WrittenMark {
-    Path,
+    Path(u64),
     Dot,
 }
 
@@ -1217,7 +1770,7 @@ fn write_mark<W: Write>(
             path.push_attribute(("stroke-width", width.as_str()));
             path.push_attribute(("stroke-opacity", opacity.as_str()));
             writer.write_event(Event::Empty(path))?;
-            Ok(WrittenMark::Path)
+            Ok(WrittenMark::Path(1))
         }
         BuiltMark::Dot(position) => {
             let cx = svg_number(position.x);
@@ -1233,6 +1786,258 @@ fn write_mark<W: Write>(
             Ok(WrittenMark::Dot)
         }
     }
+}
+
+fn build_variable_width_outline(
+    samples: &[OutlineSample],
+    nominal_width: f64,
+    tolerance: f64,
+) -> Result<String> {
+    let outline = build_sampled_outline(samples, nominal_width)?;
+    let mut right = outline.right;
+    let left = outline.left;
+
+    let mut data = String::new();
+    push_pair_command(&mut data, 'M', left[0]);
+    append_fitted_cubics(&mut data, &left, tolerance);
+    append_round_cap(
+        &mut data,
+        left[left.len() - 1],
+        right[right.len() - 1],
+        outline.radii[outline.radii.len() - 1],
+    );
+    right.reverse();
+    append_fitted_cubics(&mut data, &right, tolerance);
+    append_round_cap(&mut data, right[right.len() - 1], left[0], outline.radii[0]);
+    data.push_str(" Z");
+    Ok(data)
+}
+
+struct SampledOutline {
+    samples: Vec<OutlineSample>,
+    left: Vec<Coordinate>,
+    right: Vec<Coordinate>,
+    radii: Vec<f64>,
+}
+
+fn build_sampled_outline(samples: &[OutlineSample], nominal_width: f64) -> Result<SampledOutline> {
+    let mut start = 0;
+    let mut end = samples.len();
+    if samples.first().is_some_and(|sample| sample.flags == 0x10) {
+        start += 1;
+    }
+    if start < end && samples.last().is_some_and(|sample| sample.flags == 0x20) {
+        end -= 1;
+    }
+    let mut samples = samples[start..end].to_vec();
+    samples.dedup_by(|right, left| {
+        if left.position == right.position {
+            left.width_factor = right.width_factor;
+            true
+        } else {
+            false
+        }
+    });
+    if samples.len() < 2 {
+        return Err(Error::InvalidSvgNumber {
+            field: "variable-width outline points",
+            value: samples.len() as f64,
+        });
+    }
+
+    let mut left = Vec::with_capacity(samples.len());
+    let mut right = Vec::with_capacity(samples.len());
+    let mut radii = Vec::with_capacity(samples.len());
+    for index in 0..samples.len() {
+        let tangent = if index == 0 {
+            subtract(samples[1].position, samples[0].position)
+        } else if index + 1 == samples.len() {
+            subtract(samples[index].position, samples[index - 1].position)
+        } else {
+            subtract(samples[index + 1].position, samples[index - 1].position)
+        };
+        let tangent = normalized(tangent).unwrap_or(Coordinate { x: 1.0, y: 0.0 });
+        let normal = Coordinate {
+            x: -tangent.y,
+            y: tangent.x,
+        };
+        let factor = f64::from(samples[index].width_factor.unwrap_or(1.0));
+        let radius = finite_svg_product(nominal_width, factor * 0.5, "outline radius")?;
+        radii.push(radius.max(0.0));
+        left.push(add(samples[index].position, scale(normal, radius)));
+        right.push(add(samples[index].position, scale(normal, -radius)));
+    }
+
+    Ok(SampledOutline {
+        samples,
+        left,
+        right,
+        radii,
+    })
+}
+
+fn append_fitted_cubics(data: &mut String, points: &[Coordinate], tolerance: f64) {
+    for segment in fit_cubic_beziers(points, tolerance) {
+        append_cubic(data, segment);
+    }
+}
+
+fn append_cubic(data: &mut String, segment: CubicSegment) {
+    write!(
+        data,
+        " C{} {} {} {} {} {}",
+        display_number(segment.first_control.x),
+        display_number(segment.first_control.y),
+        display_number(segment.second_control.x),
+        display_number(segment.second_control.y),
+        display_number(segment.end.x),
+        display_number(segment.end.y),
+    )
+    .expect("writing to a String cannot fail");
+}
+
+fn catmull_rom_segment(points: &[Coordinate], index: usize) -> CubicSegment {
+    let start = points[index];
+    let end = points[index + 1];
+    let previous = index
+        .checked_sub(1)
+        .map_or(start, |previous| points[previous]);
+    let next = points.get(index + 2).copied().unwrap_or(end);
+    CubicSegment {
+        first_control: add(start, scale(subtract(end, previous), 1.0 / 6.0)),
+        second_control: subtract(end, scale(subtract(next, start), 1.0 / 6.0)),
+        end,
+    }
+}
+
+fn append_round_cap(data: &mut String, source: Coordinate, destination: Coordinate, radius: f64) {
+    if radius <= 0.0 || source == destination {
+        push_pair_command(data, 'L', destination);
+        return;
+    }
+    write!(
+        data,
+        " A{} {} 0 0 1 {} {}",
+        display_number(radius),
+        display_number(radius),
+        display_number(destination.x),
+        display_number(destination.y),
+    )
+    .expect("writing to a String cannot fail");
+}
+
+fn write_filled_path<W: Write>(
+    writer: &mut Writer<W>,
+    path_data: &str,
+    style: RenderStyle,
+) -> io::Result<WrittenMark> {
+    let color = format!(
+        "#{:02x}{:02x}{:02x}",
+        style.color[0], style.color[1], style.color[2]
+    );
+    let opacity = svg_number(style.opacity);
+    let mut path = BytesStart::new("path");
+    path.push_attribute(("d", path_data));
+    path.push_attribute(("fill", color.as_str()));
+    path.push_attribute(("fill-opacity", opacity.as_str()));
+    path.push_attribute(("stroke", "none"));
+    writer.write_event(Event::Empty(path))?;
+    Ok(WrittenMark::Path(1))
+}
+
+fn write_variable_opacity_segments<W: Write>(
+    writer: &mut Writer<W>,
+    samples: &[OutlineSample],
+    nominal_width: f64,
+    style: RenderStyle,
+    stroke_index: u64,
+) -> Result<WrittenMark> {
+    let outline = build_sampled_outline(samples, nominal_width)?;
+    let color = format!(
+        "#{:02x}{:02x}{:02x}",
+        style.color[0], style.color[1], style.color[2]
+    );
+    let mut written = 0_u64;
+    for segment_index in 0..outline.samples.len() - 1 {
+        let pair = &outline.samples[segment_index..=segment_index + 1];
+        let first_opacity =
+            (style.opacity * f64::from(pair[0].opacity_factor.unwrap_or(1.0))).clamp(0.0, 1.0);
+        let second_opacity =
+            (style.opacity * f64::from(pair[1].opacity_factor.unwrap_or(1.0))).clamp(0.0, 1.0);
+        let gradient_id = format!("clip-opacity-{stroke_index}-{segment_index}");
+        let x1 = svg_number(pair[0].position.x);
+        let y1 = svg_number(pair[0].position.y);
+        let x2 = svg_number(pair[1].position.x);
+        let y2 = svg_number(pair[1].position.y);
+        let mut gradient = BytesStart::new("linearGradient");
+        gradient.push_attribute(("id", gradient_id.as_str()));
+        gradient.push_attribute(("gradientUnits", "userSpaceOnUse"));
+        gradient.push_attribute(("x1", x1.as_str()));
+        gradient.push_attribute(("y1", y1.as_str()));
+        gradient.push_attribute(("x2", x2.as_str()));
+        gradient.push_attribute(("y2", y2.as_str()));
+        writer.write_event(Event::Start(gradient))?;
+        let first_opacity = svg_number(first_opacity);
+        let mut first_stop = BytesStart::new("stop");
+        first_stop.push_attribute(("offset", "0"));
+        first_stop.push_attribute(("stop-color", color.as_str()));
+        first_stop.push_attribute(("stop-opacity", first_opacity.as_str()));
+        writer.write_event(Event::Empty(first_stop))?;
+        let second_opacity = svg_number(second_opacity);
+        let mut second_stop = BytesStart::new("stop");
+        second_stop.push_attribute(("offset", "1"));
+        second_stop.push_attribute(("stop-color", color.as_str()));
+        second_stop.push_attribute(("stop-opacity", second_opacity.as_str()));
+        writer.write_event(Event::Empty(second_stop))?;
+        writer.write_event(Event::End(BytesEnd::new("linearGradient")))?;
+
+        let left = catmull_rom_segment(&outline.left, segment_index);
+        let right = catmull_rom_segment(&outline.right, segment_index);
+        let mut data = String::new();
+        push_pair_command(&mut data, 'M', outline.left[segment_index]);
+        append_cubic(&mut data, left);
+        if segment_index + 2 == outline.samples.len() {
+            append_round_cap(
+                &mut data,
+                outline.left[segment_index + 1],
+                outline.right[segment_index + 1],
+                outline.radii[segment_index + 1],
+            );
+        } else {
+            push_pair_command(&mut data, 'L', outline.right[segment_index + 1]);
+        }
+        append_cubic(
+            &mut data,
+            CubicSegment {
+                first_control: right.second_control,
+                second_control: right.first_control,
+                end: outline.right[segment_index],
+            },
+        );
+        if segment_index == 0 {
+            append_round_cap(
+                &mut data,
+                outline.right[0],
+                outline.left[0],
+                outline.radii[0],
+            );
+        }
+        data.push_str(" Z");
+        let fill = format!("url(#{gradient_id})");
+        let mut path = BytesStart::new("path");
+        path.push_attribute(("d", data.as_str()));
+        path.push_attribute(("fill", fill.as_str()));
+        path.push_attribute(("stroke", "none"));
+        writer.write_event(Event::Empty(path))?;
+        written += 1;
+    }
+    if written == 0 {
+        return Err(Error::InvalidSvgNumber {
+            field: "variable-opacity segments",
+            value: 0.0,
+        });
+    }
+    Ok(WrittenMark::Path(written))
 }
 
 fn append_segment(
@@ -1339,6 +2144,7 @@ mod tests {
             position: Coordinate { x, y },
             controls: stored,
             control_count: controls.len() as u8,
+            flags: 0,
         }
     }
 
@@ -1370,6 +2176,14 @@ mod tests {
             Err(error) => error,
         };
         assert!(matches!(error, Error::InvalidGroupOpacity { .. }));
+        assert!(matches!(
+            SvgWriter::new(
+                Cursor::new(Vec::new()),
+                canvas,
+                SvgOptions::default().with_spline_tolerance(0.0),
+            ),
+            Err(Error::InvalidSplineTolerance { .. })
+        ));
     }
 
     #[test]
@@ -1624,6 +2438,7 @@ mod tests {
         let mut report = SvgExportReport {
             strokes_seen: 1,
             dots_written: 1,
+            strokes_written: 1,
             ..SvgExportReport::default()
         };
         report.losses[SvgLossKind::BrushToRoundStroke.index()] = 1;
@@ -1664,13 +2479,16 @@ mod tests {
     }
 
     #[test]
-    fn approximates_splines_and_missing_controls_with_lines() {
+    fn fits_splines_with_cubics_and_falls_back_for_missing_controls() {
         let mut spline = PathBuilder::default();
         spline.push(Some(point(1.0, 2.0, &[])), CurveMode::Spline);
         spline.push(Some(point(5.0, 6.0, &[])), CurveMode::Spline);
         assert_eq!(
             spline.finish(false, CurveMode::Spline),
-            BuiltMark::Path("M1 2 L5 6".to_owned())
+            BuiltMark::Path(
+                "M1 2 C2.333333333333333 3.333333333333333 3.666666666666667 4.666666666666667 5 6"
+                    .to_owned()
+            )
         );
 
         let mut quadratic = PathBuilder::default();
@@ -1685,7 +2503,7 @@ mod tests {
     }
 
     #[test]
-    fn averages_variable_factors_without_point_sized_storage() {
+    fn tracks_factor_variation_without_point_sized_storage() {
         let mut factor = FactorAccumulator::default();
         factor.push(Some(0.5));
         factor.push(Some(1.5));
@@ -1693,6 +2511,61 @@ mod tests {
         assert_eq!(factor.value, 1.0);
         assert!(factor.variable);
         assert!(!factor.incomplete);
+    }
+
+    #[test]
+    fn writes_variable_width_as_outline_and_opacity_as_gradients() {
+        let samples = [
+            OutlineSample {
+                position: Coordinate { x: 0.0, y: 0.0 },
+                width_factor: Some(0.5),
+                opacity_factor: Some(0.25),
+                flags: 0,
+            },
+            OutlineSample {
+                position: Coordinate { x: 10.0, y: 0.0 },
+                width_factor: Some(1.0),
+                opacity_factor: Some(0.75),
+                flags: 0,
+            },
+        ];
+        let outline = build_variable_width_outline(&samples, 4.0, 0.45).unwrap();
+        assert!(outline.starts_with("M0 1"));
+        assert!(outline.contains("A2 2 0 0 1 10 -2"));
+        assert!(outline.ends_with(" Z"));
+
+        let opacity_samples = [
+            samples[0],
+            samples[1],
+            OutlineSample {
+                position: Coordinate { x: 20.0, y: 0.0 },
+                width_factor: Some(0.75),
+                opacity_factor: Some(0.5),
+                flags: 0,
+            },
+        ];
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        let written = write_variable_opacity_segments(
+            &mut writer,
+            &opacity_samples,
+            4.0,
+            RenderStyle {
+                color: [1, 2, 3],
+                width: 4.0,
+                opacity: 0.8,
+            },
+            7,
+        )
+        .unwrap();
+        assert_eq!(written, WrittenMark::Path(2));
+        let xml = String::from_utf8(writer.into_inner().into_inner()).unwrap();
+        assert!(xml.contains("id=\"clip-opacity-7-0\""));
+        assert!(xml.contains("stop-opacity=\"0.2\""));
+        assert!(xml.contains("stop-opacity=\"0.6000000000000001\""));
+        assert!(xml.contains("fill=\"url(#clip-opacity-7-0)\""));
+        assert!(xml.contains("fill=\"url(#clip-opacity-7-1)\""));
+        assert_eq!(xml.matches(" C").count(), 4);
+        assert_well_formed(&format!("<svg>{xml}</svg>"));
     }
 
     #[test]
@@ -1713,6 +2586,7 @@ mod tests {
             strokes_seen: 2,
             paths_written: 1,
             dots_written: 1,
+            strokes_written: 2,
             ..SvgExportReport::default()
         };
         first.losses[SvgLossKind::BrushToRoundStroke.index()] = 2;
@@ -1729,6 +2603,7 @@ mod tests {
         assert_eq!(first.vector_objects(), 3);
         assert_eq!(first.strokes_seen(), 3);
         assert_eq!(first.marks_written(), 2);
+        assert_eq!(first.strokes_written(), 2);
         assert_eq!(first.strokes_skipped(), 1);
         assert_eq!(first.skip_count(SvgSkipKind::EmptyStroke), 1);
         assert!(first.is_consistent());
