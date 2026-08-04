@@ -7,6 +7,25 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [clipfile-svg 0.1.1] - 2026-08-04
+
+### Added
+
+- `clipfile-svg` viewport origins independent from display size, balanced
+  nested layer groups, loss severity and omission policies, report merging,
+  one-point dot counts, and complete skip-reason counts.
+
+### Fixed
+
+- `clipfile-svg` now emits semantically valid one-point strokes as visible
+  circles instead of silently skipping them, while preserving the meaning of
+  `paths_written` and avoiding a false spline-approximation count for dots.
+
+### Changed
+
+- The SVG export example now writes beside the destination and atomically
+  publishes a complete new file without overwriting an existing output.
+
 ## [1.1.0] - 2026-08-04
 
 ### Added
@@ -187,7 +206,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Optional offscreen metadata parsing, bounded zlib tile decoding, and raster assembly.
 - Project, canvas, layer, and cycle-checked layer-tree models.
 
-[Unreleased]: https://github.com/Aodaruma/clipfile-rs/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/Aodaruma/clipfile-rs/compare/clipfile-svg-v0.1.1...HEAD
+[clipfile-svg 0.1.1]: https://github.com/Aodaruma/clipfile-rs/compare/clipfile-svg-v0.1.0...clipfile-svg-v0.1.1
 [1.1.0]: https://github.com/Aodaruma/clipfile-rs/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Aodaruma/clipfile-rs/compare/v0.5.0...v1.0.0
 [0.5.0]: https://github.com/Aodaruma/clipfile-rs/compare/v0.4.0...v0.5.0

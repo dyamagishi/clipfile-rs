@@ -95,7 +95,7 @@ cargo run --features sqlite --example inspect_text -- input.clip 42
 cargo run --features sqlite --example inspect_vector -- input.clip 42
 ```
 
-`export_vector_svg` は別packageの正式adapter `clipfile-svg` を使う。canvas寸法を `viewBox` にし、対象layerの全vector objectを1つの新規SVGへ逐次出力する。直線、二次Bezier、三次BezierはSVG pathへ直接写像する。CLIP splineはpolylineへ、点ごとの幅・不透明度は一定値へ近似する。brush形状・texture、sub color、frame fill、fallback値、未知strokeのskipは`SvgExportReport`で種類別に集計し、stderrへ表示する。既存出力は上書きしない。
+`export_vector_svg` は別packageの正式adapter `clipfile-svg` を使う。canvas寸法を `viewBox` にし、対象layerの全vector objectを1つの新規SVGへ逐次出力する。直線、二次Bezier、三次BezierはSVG pathへ、有効な1点strokeはcircleへ写像する。CLIP splineはpolylineへ、点ごとの幅・不透明度は一定値へ近似する。brush形状・texture、sub color metadata、frame fill、fallback値、未知strokeのskipは`SvgExportReport`で種類別に集計し、stderrへ表示する。同一directoryの一時ファイルをfinish・flush・syncしてから確定するため、途中失敗で確定先へpartial SVGを残さず、既存出力も上書きしない。
 
 ```console
 cargo run -p clipfile-svg --example export_vector_svg -- input.clip new-layer.svg 42

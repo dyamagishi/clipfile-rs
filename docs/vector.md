@@ -78,15 +78,19 @@ CLIP splineの補間規則はSVG pathへ直接対応付けていないため、�
 
 ## SVGとの境界
 
-workspace内の独立crate [`clipfile-svg`](../crates/clipfile-svg/) が、公開APIからSVG pathを逐次出力する。直線、二次Bezier、三次Bezierを直接写像し、次を明示的なlossとして扱う。
+workspace内の独立crate [`clipfile-svg`](../crates/clipfile-svg/) が、公開APIからSVG要素を逐次出力する。直線、二次Bezier、三次Bezierをpathへ直接写像し、有効な1点strokeは実効幅・主色・opacityを持つcircleへ写像する。1点strokeには補間区間がないためspline近似には数えない。次を明示的なlossとして扱う。
 
 - splineは直線区間
 - pointごとの可変幅・不透明度はstroke内の一定平均値
 - brush形状・textureはround linecap/join
-- sub colorとframe fill styleは未反映
+- sub color metadataとframe fill styleは未反映
 - nominal widthがない場合は1 SVG user unit
 - semantic layoutが未知のstrokeはskip
 
-既定では近似を実行して`SvgExportReport`に種類別のstroke数を集計する。`SvgOptions::with_loss_handling`または`reject_all_losses`で、任意の近似をpath書き込み前のerrorへ変更できる。XMLは`quick-xml`へ逐次書き込み、全SVG DOMや全strokeの変換結果を保持しない。割り当てる主な一時領域は現在の1 strokeのpath dataである。
+既定では近似を実行して`SvgExportReport`に種類別のstroke数を集計する。`paths_written`はpath数のまま維持し、circle数は`dots_written`、両者の合計は`marks_written`で取得する。描画しないstrokeは`SvgSkipKind`で空、未知semantic、未知curve、不完全geometry、policy拒否に分類される。成功したreportでは`strokes_seen == marks_written + strokes_skipped`かつskip総数が`strokes_skipped`と一致する。
+
+`SvgLossKind::severity`は近似・欠落・fallbackを分類し、`SvgOptions::reject_omissions`で近似を許しながら欠落だけを拒否できる。`SvgExportReport::merge`は複数ファイルの集計に使える。`SvgViewport`は表示width/heightと非0または負のviewBox原点を分離する。`SvgWriter::write_group` / `write_vectors_group`はopacity、id、title付きのgroupをcallback内で対にする。blend mode、mask、clipping、transformは推測して変換しない。
+
+XMLは`quick-xml`へ逐次書き込み、全SVG DOMや全strokeの変換結果を保持しない。割り当てる主な一時領域は現在の1 strokeのpath dataである。公式exampleは同一directoryの一時ファイルへ書き、finish・flush・sync後だけ新規出力として確定する。
 
 core crateはSVG型や出力policyに依存せず、format modelとadapterの責務を分離する。adapterは`clipfile-svg`として独立versionで公開し、`clipfile 1.1`の公開vector APIへversion付きで依存する。

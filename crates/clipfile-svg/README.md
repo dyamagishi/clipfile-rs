@@ -9,11 +9,12 @@ clipfile-svg = "0.1"
 ```
 
 It maps straight, quadratic Bezier, and cubic Bezier geometry directly to SVG
-paths. CLIP splines, per-point width/opacity, brush shapes, secondary colors,
-and frame fills do not have a lossless mapping to a plain SVG stroke. The
-default policy uses documented approximations and returns an `SvgExportReport`
-with counts for every kind of loss. Individual loss kinds can instead be
-configured as errors.
+paths. A valid one-point stroke becomes a visible `<circle>` using its primary
+color, effective width, and opacity. CLIP splines, per-point width/opacity,
+brush shapes, secondary-color metadata, and frame fills do not have a lossless
+mapping to a plain SVG stroke. The default policy uses documented
+approximations and returns an `SvgExportReport` with counts for every kind of
+loss and skip. Individual loss kinds can instead be configured as errors.
 
 The adapter writes XML incrementally through `quick-xml`. It does not build a
 complete SVG DOM or retain all converted strokes in memory; only the current
@@ -23,21 +24,51 @@ stroke's path data is allocated.
 use std::io::Cursor;
 
 use clipfile::VectorData;
-use clipfile_svg::{SvgCanvas, SvgOptions, write_svg};
+use clipfile_svg::{SvgCanvas, SvgOptions, SvgViewport, write_svg};
 
 fn export(vector: &VectorData) -> Result<Vec<u8>, clipfile_svg::Error> {
     let output = Cursor::new(Vec::new());
-    let canvas = SvgCanvas::new(1920.0, 1080.0)?;
+    let viewport = SvgViewport::new(-100.0, 50.0, 1920.0, 1080.0)?;
+    let canvas = SvgCanvas::new(960.0, 540.0)?.with_viewport(viewport);
     let (output, report) = write_svg(
         output,
         canvas,
         [vector],
         SvgOptions::default().with_title("CLIP vector layer"),
     )?;
-    eprintln!("wrote {} path(s)", report.paths_written());
+    eprintln!(
+        "wrote {} mark(s): {} paths and {} dots",
+        report.marks_written(),
+        report.paths_written(),
+        report.dots_written(),
+    );
+    assert!(report.is_consistent());
     Ok(output.into_inner())
 }
 ```
+
+`SvgCanvas::new(width, height)` remains the shorthand for
+`viewBox="0 0 width height"`. `SvgViewport` separates a non-zero or negative
+source origin and extent from the displayed SVG width and height.
+
+For cells containing several vector layers, `SvgWriter::write_group` and
+`write_vectors_group` emit balanced nested groups with opacity, optional `id`,
+and optional accessible title. They deliberately do not guess mappings for
+CLIP blend modes, masks, clipping, or transforms.
+
+`SvgLossKind::severity`, `SvgOptions::reject_omissions`, and
+`SvgExportReport::merge` support application-level policy and multi-file
+summaries. Successful reports maintain both invariants:
+
+```text
+strokes_seen    == marks_written + strokes_skipped
+strokes_skipped == sum(skip_count)
+```
+
+The bundled `export_vector_svg` example writes to a same-directory temporary
+file, flushes and syncs it, and only then publishes a new destination. It never
+overwrites an existing output and removes partial temporary output on failure
+when possible.
 
 `clipfile-svg` is versioned independently from the core format crate. Its
 `0.1.x` releases require `clipfile 1.1` or newer within the compatible `1.x`

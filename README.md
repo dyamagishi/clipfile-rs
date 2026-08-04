@@ -160,9 +160,11 @@ rather than guessing. `read_vector_data` remains the opaque escape hatch.
 The point factors are not labeled tablet pressure: the stored width and opacity
 effects are verified, but the original input-pressure value has not been
 independently identified. The separate `clipfile-svg` crate maps this API to
-SVG paths through a streaming writer. Its `SvgExportReport` counts each lossy
-approximation, and `SvgOptions` can reject selected loss categories. The
-adapter intentionally remains outside the core format model.
+SVG paths and one-point circles through a streaming writer. Its
+`SvgExportReport` counts each lossy approximation and classified skip, while
+`SvgOptions` can reject selected loss categories. Independent viewport and
+balanced layer-group APIs support multi-layer consumers. The adapter
+intentionally remains outside the core format model.
 
 `Database::ruler_layer` validates a layer's vector-ruler reference or its
 `SpecialRulerManager` and linked ruler rows. Parallel, curve, radial,
