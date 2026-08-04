@@ -415,6 +415,13 @@ pub enum SvgLossHandling {
     Reject,
 }
 
+/// Default maximum fitting error for CLIP spline samples, in SVG user units.
+///
+/// This half-unit tolerance is calibrated against CLIP STUDIO's SVG export
+/// using an observed production vector layer. It is still an approximation of
+/// CLIP's undocumented smoothing and subdivision algorithm.
+pub const DEFAULT_SPLINE_TOLERANCE: f64 = 0.5;
+
 /// Configuration for an SVG document.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SvgOptions {
@@ -429,7 +436,7 @@ impl Default for SvgOptions {
         Self {
             title: None,
             group_opacity: 1.0,
-            spline_tolerance: 0.45,
+            spline_tolerance: DEFAULT_SPLINE_TOLERANCE,
             loss_handling: [SvgLossHandling::Allow; SvgLossKind::ALL.len()],
         }
     }
@@ -2161,6 +2168,10 @@ mod tests {
 
     #[test]
     fn validates_canvas_and_document_options() {
+        assert_eq!(
+            SvgOptions::default().spline_tolerance(),
+            DEFAULT_SPLINE_TOLERANCE
+        );
         assert!(SvgCanvas::new(0.0, 10.0).is_err());
         assert!(SvgCanvas::new(f64::NAN, 10.0).is_err());
         let canvas = SvgCanvas::new(10.0, 20.0).unwrap();
@@ -2490,6 +2501,19 @@ mod tests {
                     .to_owned()
             )
         );
+
+        let mut combined_start = point(1.0, 2.0, &[]);
+        combined_start.flags = 0x11;
+        let mut combined_end = point(5.0, 6.0, &[]);
+        combined_end.flags = 0x21;
+        assert!(matches!(
+            build_spline_mark(
+                &[combined_start, combined_end],
+                false,
+                DEFAULT_SPLINE_TOLERANCE
+            ),
+            BuiltMark::Path(_)
+        ));
 
         let mut quadratic = PathBuilder::default();
         quadratic.push(Some(point(1.0, 2.0, &[])), CurveMode::Quadratic);

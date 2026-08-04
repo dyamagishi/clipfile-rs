@@ -7,6 +7,22 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [clipfile-svg 0.2.0] - 2026-08-04
+
+### Changed
+
+- `clipfile-svg` now fits CLIP spline samples to cubic Bezier paths, preserves
+  variable width as a smooth filled outline, and preserves variable opacity
+  through per-segment linear gradients instead of averaging the point values.
+- The default spline fitting tolerance is calibrated to `0.5` SVG user units
+  after comparing stored points and CLIP STUDIO's exported cubic paths.
+- The SVG example resolves core brush styles and suppresses the round-brush
+  approximation warning for confirmed hard, circular, untextured tips.
+- Plain hard round tips are the supported brush scope. Textured, multi-image,
+  and spray brushes remain explicit, policy-rejectable approximations.
+
+## [1.2.0] - 2026-08-04
+
 ### Added
 
 - Typed brush-style, dynamics graph, brush-tip image/style, fixed-spray, and
@@ -15,14 +31,6 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Native byte-aligned raster tile decoding based on `PixelPacking`, preserving
   16-bit and 32-bit channel bytes without converting through an 8-bit
   `PixelFormat`.
-
-### Changed
-
-- `clipfile-svg` now fits CLIP spline samples to cubic Bezier paths, preserves
-  variable width as a smooth filled outline, and preserves variable opacity
-  through per-segment linear gradients instead of averaging the point values.
-- The SVG example resolves core brush styles and suppresses the round-brush
-  approximation warning for confirmed hard, circular, untextured tips.
 
 ## [clipfile-svg 0.1.1] - 2026-08-04
 
@@ -223,7 +231,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Optional offscreen metadata parsing, bounded zlib tile decoding, and raster assembly.
 - Project, canvas, layer, and cycle-checked layer-tree models.
 
-[Unreleased]: https://github.com/Aodaruma/clipfile-rs/compare/clipfile-svg-v0.1.1...HEAD
+[Unreleased]: https://github.com/Aodaruma/clipfile-rs/compare/clipfile-svg-v0.2.0...HEAD
+[clipfile-svg 0.2.0]: https://github.com/Aodaruma/clipfile-rs/compare/clipfile-svg-v0.1.1...clipfile-svg-v0.2.0
+[1.2.0]: https://github.com/Aodaruma/clipfile-rs/compare/v1.1.0...v1.2.0
 [clipfile-svg 0.1.1]: https://github.com/Aodaruma/clipfile-rs/compare/clipfile-svg-v0.1.0...clipfile-svg-v0.1.1
 [1.1.0]: https://github.com/Aodaruma/clipfile-rs/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Aodaruma/clipfile-rs/compare/v0.5.0...v1.0.0

@@ -5,7 +5,7 @@
 
 ```toml
 [dependencies]
-clipfile-svg = "0.1"
+clipfile-svg = "0.2"
 ```
 
 It maps straight, quadratic Bezier, and cubic Bezier geometry directly to SVG
@@ -16,9 +16,11 @@ average. A valid one-point stroke becomes a visible `<circle>` using its
 primary color, effective width, and opacity.
 
 Brush shapes, secondary-color behavior, and frame fills do not always have a
-lossless mapping to plain SVG. Call `write_vector_with_brush_styles` with
-styles read from `Database::brush_styles` to distinguish confirmed hard round
-tips from brushes that still require texture/dab rendering. The default policy
+lossless mapping to plain SVG. The currently supported brush scope is a plain,
+hard round tip. Call `write_vector_with_brush_styles` with styles read from
+`Database::brush_styles` to confirm that scope. Textured, multi-image, and
+spray brushes are deliberately left as a reported `BrushToRoundStroke`
+approximation and can be rejected through the loss policy. The default policy
 returns an `SvgExportReport` with counts for every remaining conversion and
 skip. Individual loss kinds can instead be configured as errors.
 
@@ -42,7 +44,7 @@ fn export(vector: &VectorData) -> Result<Vec<u8>, clipfile_svg::Error> {
         [vector],
         SvgOptions::default()
             .with_title("CLIP vector layer")
-            .with_spline_tolerance(0.45),
+            .with_spline_tolerance(0.5),
     )?;
     eprintln!(
         "wrote {} mark(s): {} paths and {} dots",
@@ -79,5 +81,5 @@ overwrites an existing output and removes partial temporary output on failure
 when possible.
 
 `clipfile-svg` is versioned independently from the core format crate. Its
-`0.1.x` releases require `clipfile 1.1` or newer within the compatible `1.x`
+`0.2.x` releases require `clipfile 1.2` or newer within the compatible `1.x`
 series.

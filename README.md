@@ -83,14 +83,14 @@ payload access, `image` for zero-copy consuming conversion to image-rs, or
 
 ```toml
 [dependencies]
-clipfile = { version = "1.0", features = ["raster", "animation", "timelapse"] }
+clipfile = { version = "1.2", features = ["raster", "animation", "timelapse"] }
 ```
 
 Loss-aware SVG output is provided by the separately versioned adapter crate:
 
 ```toml
 [dependencies]
-clipfile-svg = "0.1"
+clipfile-svg = "0.2"
 ```
 
 ## Example

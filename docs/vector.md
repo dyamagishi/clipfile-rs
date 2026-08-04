@@ -59,7 +59,7 @@ stroke数は`Limits::max_vector_strokes`、全point数は`Limits::max_vector_poi
 
 二次・三次Bezierの制御点は、次のpointではなく区間の始点側pointに属する。つまりpoint `i` から `i + 1` への区間ではpoint `i` のcontrolsを使う。closed strokeの最終区間も最後のpointのcontrolsから最初のpointへ接続する。
 
-coreはCLIP splineの保存座標とkindを返し、描画方式を決めない。`clipfile-svg`は公式アプリのSVG出力と実作業ファイルで照合したcurve fittingを使い、既定0.45 SVG user unitの許容誤差でcubic Bezierへ変換する。許容誤差は`SvgOptions::with_spline_tolerance`で変更できる。
+coreはCLIP splineの保存座標とkindを返し、描画方式を決めない。`clipfile-svg`は公式アプリのSVG出力と実作業ファイルで照合したcurve fittingを使い、既定0.5 SVG user unitの許容誤差でcubic Bezierへ変換する。許容誤差は`SvgOptions::with_spline_tolerance`で変更できる。公式SVGの649 anchor中498件は保存点と丸め誤差内で一致したが、151件は点間の仮想anchorだったため、公式処理は保存点の選択だけでなく平滑化または再分割も行うと考えられる。現在のfitはこの非公開処理の近似であり、制御点の完全一致を保証しない。
 
 ## style、太さ、不透明度
 
@@ -82,7 +82,7 @@ workspace内の独立crate [`clipfile-svg`](../crates/clipfile-svg/) が、公�
 
 - splineは許容誤差付きのcubic Bezier fitting
 - pointごとの可変幅は左右輪郭、可変不透明度は区間gradient
-- 解決できないbrush形状・textureはround linecap/join
+- plain hard round以外のbrush形状・textureはround linecap/joinへの明示的近似
 - sub color metadataとframe fill styleは未反映
 - nominal widthがない場合は1 SVG user unit
 - semantic layoutが未知のstrokeはskip
@@ -97,4 +97,4 @@ XMLは`quick-xml`へ逐次書き込み、全SVG DOMや全strokeの変換結果�
 
 `PixelPacking::native_bits_per_pixel` / `native_bytes_per_pixel`は8-bit `PixelFormat`とは独立に保存深度を返す。`ClipFile::decode_native_tile`はbyte-alignedな16-bit/32-bit channelを`DecodedTile`のnative planar/interleaved byte列として返し、8-bitへ変換しない。bit-packed layoutはbit順序・row paddingが未確定なため対象外である。今回の実作業ファイルに含まれる131 raster sourceはすべて8-bit/channelだったため、高ビット深度のend-to-end fixture検証は引き続き必要となる。
 
-core crateはSVG型や出力policyに依存せず、format modelとadapterの責務を分離する。adapterは`clipfile-svg`として独立versionで公開し、`clipfile 1.1`の公開vector APIへversion付きで依存する。
+core crateはSVG型や出力policyに依存せず、format modelとadapterの責務を分離する。adapterは`clipfile-svg`として独立versionで公開し、`clipfile 1.2`の公開vector APIへversion付きで依存する。

@@ -54,7 +54,7 @@
 ## ベクターstroke recordとbrush属性
 
 - 状態: 可変layoutのread model、座標・曲線、`BrushStyle`/effector graph/tip/texture/spray/fill参照、SVG cubic fittingと可変幅・不透明度保持まで実装済み。任意brushの完全なdab renderer/serializerは未解明。
-- 観測: 従来2,757 stroke / 23,655 pointに加え、実作業ファイルの2,454 spline stroke / 81,448 pointを走査した。92-byte header offset 76は203個の`BrushStyle.MainId`と全件一致し、size effectorから2本のbig-endian `f64` graphを解決できた。公式アプリの同一layer SVGとadapter（既定許容誤差0.45）は、ともに84 path / 649 cubic区間となり、縮小raster比較のRMSEは約0.0056だった。10 strokeの可変幅を確認し、可変不透明度、副色差、frame fillは0件だった。
+- 観測: 従来2,757 stroke / 23,655 pointに加え、実作業ファイルの2,454 spline stroke / 81,448 pointを走査した。92-byte header offset 76は203個の`BrushStyle.MainId`と全件一致し、size effectorから2本のbig-endian `f64` graphを解決できた。公式アプリの同一layer SVGは84 path / 649 cubic区間だった。649 anchor中498件は保存点と0.02 user unit以内で一致し、151件は点間に生成された仮想anchorだった。保存点から公式curveまでのsampled RMSEは約0.15、最大約0.86 user unitであり、公式処理には平滑化または再分割が含まれると考えられる。同一rendererで許容誤差を走査すると0.52付近が局所最良だったが、単一fixtureへの過適合を避け既定値は0.5とした。従来0.45比で公式SVGとの正規化pixel RMSEは約20%低下した。10 strokeの可変幅を確認し、可変不透明度、副色差、frame fillは0件だった。
 - 現在の扱い: `read_vector` は対応layoutの意味値を型付きで返し、未知layoutは境界だけ走査してraw保持する。`brush_style_id`からsize/opacity/flow等のeffectorとgraph、tip/texture/spray参照を解決する。SVGはsplineをcubicへfitし、可変幅を輪郭、可変不透明度を区間gradientで保持する。plain round tipをcore metadataから確認できる場合はbrush近似lossを付けない。write側の未知fieldはbyte-for-byte保持し、render cacheとpreviewは再生成しない。
 - 次の調査: pattern/texture/sprayを実際に使うfixture、副色混色、frame fill、高ビット深度rasterを各1項目差分で作り、dab配置・混色・fillの描画意味とnative channel byte orderを確定する。templateなしのstroke/brush builderとcache再生成の可否も判断する。
 

@@ -2,7 +2,7 @@
 
 ## 現在の構成
 
-- workspace crate: `clipfile 1.1.0`、`clipfile-svg 0.1.0`
+- workspace crate: `clipfile 1.2.0`、`clipfile-svg 0.2.0`
 - edition: Rust 2024
 - MSRV: Rust 1.85
 - license: MIT
@@ -64,7 +64,7 @@ cargo run --features raster --example inspect -- tester/data/example.clip --rast
    - repository: `clipfile-rs`
    - workflow: `publish.yml`
    - environment: `release`
-10. 公開したcommitへcoreは`v1.1.0`、adapterは`clipfile-svg-v0.1.0`形式の署名付きtagを作成してpushする。
+10. 公開したcommitへcoreは`v1.2.0`、adapterは`clipfile-svg-v0.2.0`形式の署名付きtagを作成してpushする。
 
 tagのversionは`Cargo.toml`と一致しなければならない。`.github/workflows/publish.yml`は、未公開versionをOIDCの短期tokenでcrates.ioへ公開し、GitHub Releaseを作成する。すでに手動公開済みのversionは再公開せず、GitHub Release作成だけを行う。
 

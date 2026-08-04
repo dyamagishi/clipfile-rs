@@ -4,7 +4,7 @@
 
 ```toml
 [dependencies]
-clipfile = { version = "1.0", features = ["write"] }
+clipfile = { version = "1.2", features = ["write"] }
 ```
 
 ## Writerの生成と低レベルescape hatch
