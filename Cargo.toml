@@ -21,7 +21,7 @@ exclude = ["/tester/**", "/.vscode/**"]
 [dependencies]
 flate2 = { version = "1.1.9", optional = true }
 image = { version = "=0.25.9", default-features = false, features = ["png"], optional = true }
-rusqlite = { version = "0.39.0", default-features = false, features = ["bundled", "serialize"], optional = true }
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "serialize"], optional = true }
 
 [features]
 default = []
