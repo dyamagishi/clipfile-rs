@@ -280,6 +280,14 @@ impl BrushStyle {
     pub const fn composite_mode(&self) -> i64 {
         self.composite_mode
     }
+    /// Whether this brush uses CLIP's observed destination-out eraser mode.
+    ///
+    /// In vector layers, strokes using raw composite mode `27` remove pixels
+    /// from strokes that precede them instead of painting their stored color.
+    #[must_use]
+    pub const fn is_eraser(&self) -> bool {
+        self.composite_mode == 27
+    }
     /// Referenced texture pattern.
     #[must_use]
     pub const fn texture_pattern_id(&self) -> Option<u32> {
@@ -1507,5 +1515,16 @@ mod tests {
             Error::MissingColumn { table, column }
                 if table == STYLE_TABLE && column == "Hardness"
         ));
+    }
+
+    #[test]
+    fn identifies_observed_eraser_composite_mode() {
+        let mut style = style_database_without(None)
+            .brush_style(1, Limits::default())
+            .unwrap()
+            .unwrap();
+        assert!(!style.is_eraser());
+        style.composite_mode = 27;
+        assert!(style.is_eraser());
     }
 }

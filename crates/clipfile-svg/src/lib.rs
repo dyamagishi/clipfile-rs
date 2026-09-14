@@ -878,8 +878,10 @@ impl SvgGroupOptions {
 #[must_use = "call SvgWriter::finish to close the SVG document"]
 pub struct SvgWriter<W: Write> {
     writer: Writer<W>,
+    canvas: SvgCanvas,
     options: SvgOptions,
     report: SvgExportReport,
+    next_eraser_group_id: u64,
 }
 
 impl<W: Write> SvgWriter<W> {
@@ -901,6 +903,7 @@ impl<W: Write> SvgWriter<W> {
         );
         let mut svg = BytesStart::new("svg");
         svg.push_attribute(("xmlns", "http://www.w3.org/2000/svg"));
+        svg.push_attribute(("xmlns:xlink", "http://www.w3.org/1999/xlink"));
         svg.push_attribute(("width", width.as_str()));
         svg.push_attribute(("height", height.as_str()));
         svg.push_attribute(("viewBox", view_box.as_str()));
@@ -922,8 +925,10 @@ impl<W: Write> SvgWriter<W> {
 
         Ok(Self {
             writer,
+            canvas,
             options,
             report: SvgExportReport::default(),
+            next_eraser_group_id: 0,
         })
     }
 
@@ -940,23 +945,239 @@ impl<W: Write> SvgWriter<W> {
     ) -> Result<()> {
         self.report.vector_objects += 1;
         let strokes = vector.strokes().collect::<Vec<_>>();
+        let brushes = strokes
+            .iter()
+            .map(|stroke| {
+                stroke
+                    .style()
+                    .and_then(|style| style.brush_style_id())
+                    .and_then(&mut resolve)
+            })
+            .collect::<Vec<_>>();
+        let has_eraser = strokes
+            .iter()
+            .zip(&brushes)
+            .any(|(stroke, brush)| resolved_brush_is_eraser(stroke.style(), *brush));
+
+        if has_eraser {
+            let mut operations = Vec::new();
+            let mut index = 0;
+            while index < strokes.len() {
+                if self.options.one_point_stroke_handling()
+                    == SvgOnePointStrokeHandling::ConnectNearby
+                    && let Some(run) = connected_one_point_run(
+                        &strokes,
+                        index,
+                    )
+                {
+                    let brush = brushes[index];
+                    let is_eraser = resolved_brush_is_eraser(Some(run.style), brush);
+                    let end_index = run.end_index;
+                    operations.push(VectorWriteOperation::Connected {
+                        run,
+                        brush,
+                        is_eraser,
+                    });
+                    index = end_index;
+                    continue;
+                }
+                let stroke = strokes[index];
+                let brush = brushes[index];
+                operations.push(VectorWriteOperation::Stroke {
+                    stroke,
+                    brush,
+                    is_eraser: resolved_brush_is_eraser(stroke.style(), brush),
+                });
+                index += 1;
+            }
+            return self.write_eraser_composited_vector(&operations);
+        }
+
         let mut index = 0;
         while index < strokes.len() {
             if self.options.one_point_stroke_handling() == SvgOnePointStrokeHandling::ConnectNearby
-                && let Some(run) = connected_one_point_run(&strokes, index)
+                && let Some(run) = connected_one_point_run(
+                    &strokes,
+                    index,
+                )
             {
-                let brush = run.style.brush_style_id().and_then(&mut resolve);
+                let brush = brushes[index];
                 self.write_connected_one_point_run(&run, brush)?;
                 index = run.end_index;
                 continue;
             }
             let stroke = strokes[index];
-            let brush = stroke
-                .style()
-                .and_then(|style| style.brush_style_id())
-                .and_then(&mut resolve);
+            let brush = brushes[index];
             self.write_stroke_with_brush_style(stroke, brush)?;
             index += 1;
+        }
+        Ok(())
+    }
+
+    fn write_eraser_composited_vector(
+        &mut self,
+        operations: &[VectorWriteOperation<'_, '_>],
+    ) -> Result<()> {
+        let group_number = self.next_eraser_group_id;
+        self.next_eraser_group_id = self.next_eraser_group_id.saturating_add(1);
+        let prefix = format!("clipfile-svg-eraser-{group_number}");
+        let eraser_indices = operations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, operation)| operation.is_eraser().then_some(index))
+            .collect::<Vec<_>>();
+
+        self.writer
+            .write_event(Event::Start(BytesStart::new("defs")))?;
+        self.write_eraser_color_filter(&prefix)?;
+        for (index, operation) in operations.iter().enumerate() {
+            let id = format!("{prefix}-operation-{index}");
+            let mut group = BytesStart::new("g");
+            group.push_attribute(("id", id.as_str()));
+            self.writer.write_event(Event::Start(group))?;
+            match operation {
+                VectorWriteOperation::Stroke { stroke, brush, .. } => {
+                    self.write_stroke_with_brush_style(*stroke, *brush)?;
+                }
+                VectorWriteOperation::Connected { run, brush, .. } => {
+                    self.write_connected_one_point_run(run, *brush)?;
+                }
+            }
+            self.writer.write_event(Event::End(BytesEnd::new("g")))?;
+        }
+        for &eraser_index in &eraser_indices {
+            self.write_eraser_mask(&prefix, eraser_index, &eraser_indices)?;
+        }
+        self.writer.write_event(Event::End(BytesEnd::new("defs")))?;
+
+        let mut segment_start = 0;
+        for &eraser_index in &eraser_indices {
+            self.write_paint_operation_segment(
+                &prefix,
+                operations,
+                segment_start,
+                eraser_index,
+                Some(eraser_index),
+            )?;
+            segment_start = eraser_index + 1;
+        }
+        self.write_paint_operation_segment(
+            &prefix,
+            operations,
+            segment_start,
+            operations.len(),
+            None,
+        )
+    }
+
+    fn write_eraser_color_filter(&mut self, prefix: &str) -> Result<()> {
+        let viewport = self.canvas.viewport();
+        let id = format!("{prefix}-black");
+        let x = svg_number(viewport.min_x());
+        let y = svg_number(viewport.min_y());
+        let width = svg_number(viewport.width());
+        let height = svg_number(viewport.height());
+        let mut filter = BytesStart::new("filter");
+        filter.push_attribute(("id", id.as_str()));
+        filter.push_attribute(("filterUnits", "userSpaceOnUse"));
+        filter.push_attribute(("x", x.as_str()));
+        filter.push_attribute(("y", y.as_str()));
+        filter.push_attribute(("width", width.as_str()));
+        filter.push_attribute(("height", height.as_str()));
+        filter.push_attribute(("color-interpolation-filters", "sRGB"));
+        self.writer.write_event(Event::Start(filter))?;
+        let mut matrix = BytesStart::new("feColorMatrix");
+        matrix.push_attribute(("type", "matrix"));
+        matrix.push_attribute(("values", "0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0"));
+        self.writer.write_event(Event::Empty(matrix))?;
+        self.writer
+            .write_event(Event::End(BytesEnd::new("filter")))?;
+        Ok(())
+    }
+
+    fn write_eraser_mask(
+        &mut self,
+        prefix: &str,
+        eraser_index: usize,
+        eraser_indices: &[usize],
+    ) -> Result<()> {
+        let viewport = self.canvas.viewport();
+        let id = format!("{prefix}-mask-{eraser_index}");
+        let x = svg_number(viewport.min_x());
+        let y = svg_number(viewport.min_y());
+        let width = svg_number(viewport.width());
+        let height = svg_number(viewport.height());
+        let mut mask = BytesStart::new("mask");
+        mask.push_attribute(("id", id.as_str()));
+        mask.push_attribute(("maskUnits", "userSpaceOnUse"));
+        mask.push_attribute(("maskContentUnits", "userSpaceOnUse"));
+        mask.push_attribute(("mask-type", "luminance"));
+        mask.push_attribute(("x", x.as_str()));
+        mask.push_attribute(("y", y.as_str()));
+        mask.push_attribute(("width", width.as_str()));
+        mask.push_attribute(("height", height.as_str()));
+        self.writer.write_event(Event::Start(mask))?;
+
+        let mut background = BytesStart::new("rect");
+        background.push_attribute(("x", x.as_str()));
+        background.push_attribute(("y", y.as_str()));
+        background.push_attribute(("width", width.as_str()));
+        background.push_attribute(("height", height.as_str()));
+        background.push_attribute(("fill", "white"));
+        self.writer.write_event(Event::Empty(background))?;
+
+        let filter = format!("url(#{prefix}-black)");
+        for &future_index in eraser_indices
+            .iter()
+            .filter(|&&future_index| future_index >= eraser_index)
+        {
+            let href = format!("#{prefix}-operation-{future_index}");
+            let mut use_element = BytesStart::new("use");
+            use_element.push_attribute(("href", href.as_str()));
+            use_element.push_attribute(("xlink:href", href.as_str()));
+            use_element.push_attribute(("filter", filter.as_str()));
+            self.writer.write_event(Event::Empty(use_element))?;
+        }
+        self.writer.write_event(Event::End(BytesEnd::new("mask")))?;
+        Ok(())
+    }
+
+    fn write_paint_operation_segment(
+        &mut self,
+        prefix: &str,
+        operations: &[VectorWriteOperation<'_, '_>],
+        start: usize,
+        end: usize,
+        eraser_mask: Option<usize>,
+    ) -> Result<()> {
+        if start >= end {
+            return Ok(());
+        }
+        let has_paint = operations[start..end]
+            .iter()
+            .any(|operation| !operation.is_eraser());
+        if !has_paint {
+            return Ok(());
+        }
+
+        if let Some(eraser_index) = eraser_mask {
+            let mask = format!("url(#{prefix}-mask-{eraser_index})");
+            let mut group = BytesStart::new("g");
+            group.push_attribute(("mask", mask.as_str()));
+            self.writer.write_event(Event::Start(group))?;
+        }
+        for (index, operation) in operations.iter().enumerate().take(end).skip(start) {
+            if operation.is_eraser() {
+                continue;
+            }
+            let href = format!("#{prefix}-operation-{index}");
+            let mut use_element = BytesStart::new("use");
+            use_element.push_attribute(("href", href.as_str()));
+            use_element.push_attribute(("xlink:href", href.as_str()));
+            self.writer.write_event(Event::Empty(use_element))?;
+        }
+        if eraser_mask.is_some() {
+            self.writer.write_event(Event::End(BytesEnd::new("g")))?;
         }
         Ok(())
     }
@@ -1503,6 +1724,35 @@ struct ConnectedOnePointRun {
     style: VectorStrokeStyle,
     samples: Vec<OnePointStrokeSample>,
     bridge_points: Vec<PointData>,
+}
+
+enum VectorWriteOperation<'vector, 'brush> {
+    Stroke {
+        stroke: VectorStroke<'vector>,
+        brush: Option<&'brush BrushStyle>,
+        is_eraser: bool,
+    },
+    Connected {
+        run: ConnectedOnePointRun,
+        brush: Option<&'brush BrushStyle>,
+        is_eraser: bool,
+    },
+}
+
+impl VectorWriteOperation<'_, '_> {
+    const fn is_eraser(&self) -> bool {
+        match self {
+            Self::Stroke { is_eraser, .. } | Self::Connected { is_eraser, .. } => *is_eraser,
+        }
+    }
+}
+
+fn resolved_brush_is_eraser(style: Option<VectorStrokeStyle>, brush: Option<&BrushStyle>) -> bool {
+    style.is_some_and(|style| {
+        style
+            .brush_style_id()
+            .is_some_and(|id| brush.is_some_and(|brush| brush.id() == id && brush.is_eraser()))
+    })
 }
 
 type NormalizedSplineSample = (PointData, Option<f32>, Option<f32>);
@@ -3512,6 +3762,30 @@ mod tests {
         assert!(xml.ends_with("</svg>"));
         assert_well_formed(&xml);
         assert_eq!(report, SvgExportReport::default());
+    }
+
+    #[test]
+    fn writes_suffix_eraser_masks_with_legacy_and_svg2_use_links() {
+        let mut writer = SvgWriter::new(
+            Cursor::new(Vec::new()),
+            SvgCanvas::new(100.0, 50.0).unwrap(),
+            SvgOptions::default(),
+        )
+        .unwrap();
+        writer.write_eraser_color_filter("eraser-test").unwrap();
+        writer
+            .write_eraser_mask("eraser-test", 2, &[0, 2, 4])
+            .unwrap();
+        let (output, _) = writer.finish().unwrap();
+        let xml = String::from_utf8(output.into_inner()).unwrap();
+
+        assert!(xml.contains("xmlns:xlink=\"http://www.w3.org/1999/xlink\""));
+        assert!(xml.contains("id=\"eraser-test-black\""));
+        assert!(xml.contains("mask-type=\"luminance\""));
+        assert!(!xml.contains("#eraser-test-operation-0"));
+        assert!(xml.contains("href=\"#eraser-test-operation-2\""));
+        assert!(xml.contains("xlink:href=\"#eraser-test-operation-4\""));
+        assert_well_formed(&xml);
     }
 
     #[test]

@@ -39,9 +39,17 @@ approximation and can be rejected through the loss policy. The default policy
 returns an `SvgExportReport` with counts for every remaining conversion and
 skip. Individual loss kinds can instead be configured as errors.
 
-The adapter writes XML incrementally through `quick-xml`. It does not build a
-complete SVG DOM or retain all converted strokes in memory; only the current
-stroke's path data is allocated.
+When resolved brush metadata identifies CLIP's destination-out eraser mode,
+vector-level writing preserves stroke order with SVG luminance masks. Each
+paint segment is affected only by eraser strokes that follow it; later paint
+strokes remain visible. This behavior requires
+`write_vector_with_brush_styles`, because unresolved brush IDs do not expose
+the composite mode.
+
+The adapter writes XML incrementally through `quick-xml` and does not build a
+complete SVG DOM. Bodies containing eraser strokes retain only lightweight
+operation references until their mask definitions and ordered `<use>` nodes
+have been emitted; path data is still allocated one stroke at a time.
 
 ```rust,no_run
 use std::io::Cursor;
