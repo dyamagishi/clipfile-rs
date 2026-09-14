@@ -181,10 +181,12 @@ pub struct CelTrack {
 /// One independently placed cel-selection curve in a timeline track.
 ///
 /// A repeated animation loop is stored as another segment with its own
-/// `TimeClip` and local keyframe curve. Gaps between segments remain blank.
+/// timeline `TimeClip`, source `MotionClip`, and keyframe curve. Gaps between
+/// segments remain blank.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CelTrackSegment {
     time_clip: Option<AnimationTimeClip>,
+    motion_clip: Option<AnimationTimeClip>,
     keyframes: Vec<CelKeyframe>,
 }
 
@@ -195,7 +197,13 @@ impl CelTrackSegment {
         self.time_clip
     }
 
-    /// Sorted cel-selection keys in this segment's local 60 Hz timebase.
+    /// Source interval selected by this segment's `MotionClip`, if present.
+    #[must_use]
+    pub const fn motion_clip(&self) -> Option<AnimationTimeClip> {
+        self.motion_clip
+    }
+
+    /// Sorted cel-selection keys in the source motion's 60 Hz timebase.
     #[must_use]
     pub fn keyframes(&self) -> &[CelKeyframe] {
         &self.keyframes
@@ -203,7 +211,17 @@ impl CelTrackSegment {
 
     fn cel_at_frame(&self, display_frame: f64, frame_rate: f64) -> Option<&str> {
         let tick = match self.time_clip {
-            Some(time_clip) => time_clip.local_time_60hz(display_frame, frame_rate)?,
+            Some(time_clip) => {
+                let local = time_clip.local_time_60hz(display_frame, frame_rate)?;
+                match self.motion_clip {
+                    Some(motion) => {
+                        let duration = (time_clip.end - time_clip.start) / time_clip.rate;
+                        let source_duration = (motion.end - motion.start) / motion.rate;
+                        motion.start * 60.0 / motion.rate + local * source_duration / duration
+                    }
+                    None => local,
+                }
+            }
             None => display_frame * 60.0 / frame_rate,
         };
         let index = self
@@ -1059,7 +1077,7 @@ impl CelTrack {
 
     /// Cel-selection keys flattened in serialized segment order.
     ///
-    /// Local times restart at zero for independently placed segments. Use
+    /// Source times may restart at zero or retain their original offset. Use
     /// [`Self::segments`] when their timeline placement matters.
     #[must_use]
     pub fn keyframes(&self) -> &[CelKeyframe] {
@@ -1732,7 +1750,7 @@ impl<R: Read + Seek> ClipFile<R> {
                 })?),
                 None => None,
             };
-            let (curves, located_curves, located_time_clips, action_clip_offsets) =
+            let (curves, located_curves, located_time_clips, motion_clips, action_clip_offsets) =
                 if let Some(identifier) = source.external_identifier.as_deref() {
                     let object = self
                         .resolve_external_object(database, identifier)?
@@ -1759,6 +1777,7 @@ impl<R: Read + Seek> ClipFile<R> {
                     let mixer = decompress_mixer(&compressed, limits.max_animation_bytes())?;
                     let located_curves = parse_animation_curves_located(&mixer, limits)?;
                     let located_time_clips = parse_animation_time_clips_located(&mixer, limits)?;
+                    let motion_clips = parse_animation_spans_located(&mixer, limits, "MotionClip")?;
                     let action_clip_offsets = parse_animation_action_clip_offsets(&mixer, limits)?;
                     let curves = located_curves
                         .iter()
@@ -1778,10 +1797,11 @@ impl<R: Read + Seek> ClipFile<R> {
                         curves,
                         located_curves,
                         located_time_clips,
+                        motion_clips,
                         action_clip_offsets,
                     )
                 } else {
-                    (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+                    (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
                 };
             let secondary_curves = if let Some(identifier) =
                 source.secondary_external_identifier.as_deref()
@@ -1869,6 +1889,7 @@ impl<R: Read + Seek> ClipFile<R> {
                     source.id,
                     &located_curves,
                     &located_time_clips,
+                    &motion_clips,
                     &action_clip_offsets,
                 )?;
                 let keyframes = segments
@@ -1922,6 +1943,7 @@ fn build_cel_track_segments(
     track_id: i64,
     curves: &[LocatedAnimationCurve],
     time_clips: &[LocatedAnimationTimeClip],
+    motion_clips: &[LocatedAnimationTimeClip],
     action_clip_offsets: &[usize],
 ) -> Result<Vec<CelTrackSegment>> {
     let image_curve_count = curves
@@ -1939,6 +1961,7 @@ fn build_cel_track_segments(
             .expect("image curve count was checked");
         return Ok(vec![CelTrackSegment {
             time_clip: time_clips.first().map(|located| located.time_clip),
+            motion_clip: motion_clips.first().map(|located| located.time_clip),
             keyframes: cel_keyframes(track_id, &curve.curve)?,
         }]);
     }
@@ -1971,8 +1994,20 @@ fn build_cel_track_segments(
                 "cel track {track_id} action clip contains multiple TimeClip objects"
             )));
         }
+        let mut matching_motion_clips = motion_clips
+            .iter()
+            .filter(|located| located.offset >= start && located.offset < end);
+        let motion_clip = matching_motion_clips
+            .next()
+            .map(|located| located.time_clip);
+        if matching_motion_clips.next().is_some() {
+            return Err(animation_error(format!(
+                "cel track {track_id} action clip contains multiple MotionClip objects"
+            )));
+        }
         segments.push(CelTrackSegment {
             time_clip: Some(time_clip.time_clip),
+            motion_clip,
             keyframes: cel_keyframes(track_id, &curve.curve)?,
         });
     }
@@ -5740,34 +5775,42 @@ fn parse_animation_time_clips_located(
     bytes: &[u8],
     limits: Limits,
 ) -> Result<Vec<LocatedAnimationTimeClip>> {
+    parse_animation_spans_located(bytes, limits, "TimeClip")
+}
+
+fn parse_animation_spans_located(
+    bytes: &[u8],
+    limits: Limits,
+    object_kind: &str,
+) -> Result<Vec<LocatedAnimationTimeClip>> {
     let (strings, data_start) = parse_string_table_with_data_start(bytes, limits)?;
-    let Some(time_clip_id) = string_id_optional(&strings, "TimeClip") else {
+    let Some(time_clip_id) = string_id_optional(&strings, object_kind) else {
         return Ok(Vec::new());
     };
     let Some(null_id) = string_id_optional(&strings, "null") else {
-        return Err(animation_error(
-            "animation mixer declares TimeClip but has no null type",
-        ));
+        return Err(animation_error(format!(
+            "animation mixer declares {object_kind} but has no null type"
+        )));
     };
     let Some(double_id) = string_id_optional(&strings, "Double") else {
-        return Err(animation_error(
-            "animation mixer declares TimeClip but has no Double type",
-        ));
+        return Err(animation_error(format!(
+            "animation mixer declares {object_kind} but has no Double type"
+        )));
     };
     let Some(start_id) = string_id_optional(&strings, "Start") else {
-        return Err(animation_error(
-            "animation mixer declares TimeClip but has no Start field",
-        ));
+        return Err(animation_error(format!(
+            "animation mixer declares {object_kind} but has no Start field"
+        )));
     };
     let Some(end_id) = string_id_optional(&strings, "End") else {
-        return Err(animation_error(
-            "animation mixer declares TimeClip but has no End field",
-        ));
+        return Err(animation_error(format!(
+            "animation mixer declares {object_kind} but has no End field"
+        )));
     };
     let Some(rate_id) = string_id_optional(&strings, "Rate") else {
-        return Err(animation_error(
-            "animation mixer declares TimeClip but has no Rate field",
-        ));
+        return Err(animation_error(format!(
+            "animation mixer declares {object_kind} but has no Rate field"
+        )));
     };
 
     let mut time_clips = Vec::new();
@@ -5833,9 +5876,9 @@ fn parse_animation_time_clips_located(
         };
         if !start.is_finite() || !end.is_finite() || !rate.is_finite() || start > end || rate <= 0.0
         {
-            return Err(animation_error(
-                "animation TimeClip has invalid Start, End, or Rate",
-            ));
+            return Err(animation_error(format!(
+                "animation {object_kind} has invalid Start, End, or Rate"
+            )));
         }
         enforce_item_limit(
             time_clips.len() as u64 + 1,
@@ -5848,9 +5891,9 @@ fn parse_animation_time_clips_located(
         });
     }
     if time_clips.is_empty() {
-        Err(animation_error(
-            "animation mixer declares TimeClip but its range could not be decoded",
-        ))
+        Err(animation_error(format!(
+            "animation mixer declares {object_kind} but its range could not be decoded"
+        )))
     } else {
         Ok(time_clips)
     }
@@ -6754,6 +6797,10 @@ mod tests {
     }
 
     fn segmented_cel_binc() -> Vec<u8> {
+        segmented_cel_binc_with_motion(0.0, 0.0)
+    }
+
+    fn segmented_cel_binc_with_motion(first_source: f64, second_source: f64) -> Vec<u8> {
         let strings = [
             "null",
             "ActionNodeClip",
@@ -6783,6 +6830,7 @@ mod tests {
             "second",
             "C",
             "D",
+            "MotionClip",
         ];
         let mut bytes = b"cmt 0100binc\0\0\0\0".to_vec();
         push_u32(&mut bytes, strings.len() as u32);
@@ -6791,25 +6839,33 @@ mod tests {
             bytes.extend_from_slice(value.as_bytes());
         }
 
-        for (name, start, end, tags) in [
-            (3, 0.0_f64, 2.0_f64, [17, 18]),
-            (25, 4.0_f64, 6.0_f64, [26, 27]),
+        for (name, start, end, source, tags) in [
+            (3, 0.0_f64, 2.0_f64, first_source, [17, 18]),
+            (25, 4.0_f64, 6.0_f64, second_source, [26, 27]),
         ] {
-            for value in [1, 0, 1, 2, name, 1, 4, 0, 0, 3] {
+            for value in [1, 0, 1, 2, name, 2] {
                 push_u32(&mut bytes, value);
             }
-            for (field, value) in [(6, start), (7, end), (8, 60.0)] {
-                push_u32(&mut bytes, field);
-                push_u32(&mut bytes, 5);
-                bytes.extend_from_slice(&value.to_le_bytes());
-                push_u32(&mut bytes, 0);
-                push_u32(&mut bytes, 0);
+            for (kind, begin, finish) in [(4, start, end), (28, source, source + end - start)] {
+                for value in [kind, 0, 0, 3] {
+                    push_u32(&mut bytes, value);
+                }
+                for (field, value) in [(6, begin), (7, finish), (8, 60.0)] {
+                    push_u32(&mut bytes, field);
+                    push_u32(&mut bytes, 5);
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                    push_u32(&mut bytes, 0);
+                    push_u32(&mut bytes, 0);
+                }
             }
 
             for value in [9, 0, 1, 10, 11, 7] {
                 push_u32(&mut bytes, value);
             }
-            for (field, values) in [(12, [0.0_f32, 1.0]), (14, [0.0_f32, 1.0])] {
+            for (field, values) in [
+                (12, [source as f32, source as f32 + 1.0]),
+                (14, [0.0_f32, 1.0]),
+            ] {
                 push_u32(&mut bytes, field);
                 push_u32(&mut bytes, 13);
                 push_u32(&mut bytes, values.len() as u32);
@@ -7325,6 +7381,7 @@ mod tests {
             keyframes: keyframes.clone(),
             segments: vec![CelTrackSegment {
                 time_clip: Some(time_clip),
+                motion_clip: None,
                 keyframes,
             }],
         };
@@ -7339,12 +7396,16 @@ mod tests {
         let mixer = segmented_cel_binc();
         let curves = parse_animation_curves_located(&mixer, Limits::default()).unwrap();
         let time_clips = parse_animation_time_clips_located(&mixer, Limits::default()).unwrap();
+        let motion_clips =
+            parse_animation_spans_located(&mixer, Limits::default(), "MotionClip").unwrap();
         let action_clips = parse_animation_action_clip_offsets(&mixer, Limits::default()).unwrap();
         assert_eq!(curves.len(), 2);
         assert_eq!(time_clips.len(), 2);
         assert_eq!(action_clips.len(), 2);
 
-        let segments = build_cel_track_segments(1, &curves, &time_clips, &action_clips).unwrap();
+        let segments =
+            build_cel_track_segments(1, &curves, &time_clips, &motion_clips, &action_clips)
+                .unwrap();
         let keyframes = segments
             .iter()
             .flat_map(|segment| segment.keyframes.iter().cloned())
@@ -7366,8 +7427,58 @@ mod tests {
     }
 
     #[test]
+    fn cel_motion_offsets_are_not_added_twice() {
+        for source in [-4.0, 4.0, 75.0] {
+            let mixer = segmented_cel_binc_with_motion(0.0, source);
+            let limits = Limits::default();
+            let curves = parse_animation_curves_located(&mixer, limits).unwrap();
+            let times = parse_animation_time_clips_located(&mixer, limits).unwrap();
+            let motions = parse_animation_spans_located(&mixer, limits, "MotionClip").unwrap();
+            let actions = parse_animation_action_clip_offsets(&mixer, limits).unwrap();
+            let segments =
+                build_cel_track_segments(1, &curves, &times, &motions, &actions).unwrap();
+            let segment = &segments[1];
+            assert_eq!(segment.motion_clip().unwrap().start(), source);
+            assert_eq!(segment.cel_at_frame(3.0, 60.0), None);
+            assert_eq!(segment.cel_at_frame(4.0, 60.0), Some("C"));
+            assert_eq!(segment.cel_at_frame(5.0, 60.0), Some("D"));
+            assert_eq!(segment.cel_at_frame(6.0, 60.0), None);
+        }
+    }
+
+    #[test]
+    fn cel_motion_mapping_preserves_leading_blanks_and_source_timebase() {
+        let mut segment = CelTrackSegment {
+            time_clip: Some(AnimationTimeClip {
+                start: 30.0,
+                end: 60.0,
+                rate: 24.0,
+            }),
+            motion_clip: Some(AnimationTimeClip {
+                start: 30.0,
+                end: 60.0,
+                rate: 24.0,
+            }),
+            keyframes: vec![CelKeyframe {
+                time_60hz: 85.0,
+                value: 0.0,
+                tag: "1".into(),
+            }],
+        };
+        assert_eq!(segment.cel_at_frame(29.0, 24.0), None);
+        assert_eq!(segment.cel_at_frame(30.0, 24.0), None);
+        assert_eq!(segment.cel_at_frame(33.0, 24.0), None);
+        assert_eq!(segment.cel_at_frame(34.0, 24.0), Some("1"));
+        assert_eq!(segment.cel_at_frame(59.0, 24.0), Some("1"));
+        assert_eq!(segment.cel_at_frame(60.0, 24.0), None);
+        // A zero-length placement never evaluates a curve or divides by zero.
+        segment.time_clip.as_mut().unwrap().end = 30.0;
+        assert_eq!(segment.cel_at_frame(30.0, 24.0), None);
+    }
+
+    #[test]
     fn image_cel_track_without_a_curve_is_empty() {
-        let segments = build_cel_track_segments(175, &[], &[], &[]).unwrap();
+        let segments = build_cel_track_segments(175, &[], &[], &[], &[]).unwrap();
         assert!(segments.is_empty());
     }
 

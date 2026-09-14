@@ -17,6 +17,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- Cel selection now maps the timeline `TimeClip` to the source `MotionClip`,
+  avoiding doubled leading blanks for curves whose stored keys retain a
+  nonzero source offset while preserving independently placed repeats.
 - Image-cel tracks with no `ImageCelName` curve are now exposed as empty cel
   tracks, allowing valid animation folders with no assigned timeline cels.
 - Animation readers now select only the `FirstTrack` chain for the requested

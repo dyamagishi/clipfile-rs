@@ -197,9 +197,10 @@ their layer UUIDs. It validates the complete `FirstTrack` / `TrackNextIndex`
 chain, bounds zlib expansion, checks the BINC string table and arrays, and
 exposes every `FCurve` in the primary action mixer, including
 interpolation, slopes, optional tags, and constant-revision flags. `CelTrack`
-groups each `ActionNodeClip` with its local `TimeClip` and `ImageCelName`
-curve, so repeated or discontinuous loops remain addressable while timeline
-gaps stay blank. `AnimationTrack` preserves raw track kinds, every `TimeClip`,
+groups each `ActionNodeClip` with its timeline `TimeClip`, source `MotionClip`,
+and `ImageCelName` curve. Source offsets are retained instead of assuming
+every curve begins at zero, so late-starting cels and repeated or discontinuous
+loops stay in sync while timeline gaps stay blank. `AnimationTrack` preserves raw track kinds, every `TimeClip`,
 and all curves, including observed `PlayTime` and `AudioPlayer` data. It also validates the
 inline `TrackValueMap` and exposes observed floating-point and indexed-text
 values while preserving future value types as opaque payloads. Secondary
