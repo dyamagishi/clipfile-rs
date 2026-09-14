@@ -30,6 +30,12 @@ single dot is never converted automatically. This option requires vector-level
 writing (`write_vector` or `write_vector_with_brush_styles`); `write_stroke`
 has no neighboring-stroke context and therefore preserves a circle.
 
+`SvgOptions::with_nominal_width_adjustment` applies a finite absolute offset to
+resolved nominal stroke diameters before per-point pressure factors are
+evaluated. The default is `0.0`, so ordinary SVG output is unchanged. Raster
+adapters can use a small negative adjustment to calibrate crisp SVG outlines
+against another renderer; adjusted widths are clamped at zero.
+
 Brush shapes, secondary-color behavior, and frame fills do not always have a
 lossless mapping to plain SVG. The currently supported brush scope is a plain,
 hard round tip. Call `write_vector_with_brush_styles` with styles read from
@@ -97,8 +103,10 @@ source origin and extent from the displayed SVG width and height.
 
 For cells containing several vector layers, `SvgWriter::write_group` and
 `write_vectors_group` emit balanced nested groups with opacity, optional `id`,
-and optional accessible title. They deliberately do not guess mappings for
-CLIP blend modes, masks, clipping, or transforms.
+optional accessible title, and an optional validated affine matrix supplied by
+the caller. Apart from the resolved vector-brush eraser mode described above,
+they deliberately do not guess mappings for CLIP blend modes, masks, clipping,
+or transforms.
 
 `SvgLossKind::severity`, `SvgOptions::reject_omissions`, and
 `SvgExportReport::merge` support application-level policy and multi-file

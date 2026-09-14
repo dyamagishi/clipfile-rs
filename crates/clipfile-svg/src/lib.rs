@@ -43,6 +43,8 @@ pub enum Error {
     InvalidGroupOpacity { opacity: f64 },
     /// Spline fitting tolerance must be finite and greater than zero.
     InvalidSplineTolerance { tolerance: f64 },
+    /// Nominal stroke-width adjustment must be finite.
+    InvalidNominalWidthAdjustment { adjustment: f64 },
     /// A title contains a character disallowed by XML 1.0.
     InvalidXmlText,
     /// A group identifier is empty or is not valid XML 1.0 text.
@@ -84,6 +86,12 @@ impl fmt::Display for Error {
             }
             Self::InvalidSplineTolerance { tolerance } => {
                 write!(formatter, "invalid spline fitting tolerance {tolerance}")
+            }
+            Self::InvalidNominalWidthAdjustment { adjustment } => {
+                write!(
+                    formatter,
+                    "invalid nominal stroke-width adjustment {adjustment}"
+                )
             }
             Self::InvalidXmlText => write!(formatter, "SVG text contains invalid XML 1.0 text"),
             Self::InvalidGroupId => write!(formatter, "invalid SVG group identifier"),
@@ -256,7 +264,7 @@ pub enum SvgLossKind {
     BezierControlsToLine,
     /// An unsafe spline-fit segment was locally replaced with a line.
     SplineFitSegmentToLine,
-    /// Consecutive nearby one-point strokes were joined into a centerline path.
+    /// Consecutive nearby one-point strokes were joined into a continuous path.
     AdjacentOnePointStrokesConnected,
     /// A stroke with an unsupported semantic layout was skipped.
     UnsupportedStrokeSkipped,
@@ -349,7 +357,7 @@ impl fmt::Display for SvgLossKind {
             Self::BezierControlsToLine => "Bezier segment without controls replaced by a line",
             Self::SplineFitSegmentToLine => "unsafe spline-fit segment replaced by a line",
             Self::AdjacentOnePointStrokesConnected => {
-                "adjacent one-point strokes connected into a centerline"
+                "adjacent one-point strokes connected into a continuous path"
             }
             Self::UnsupportedStrokeSkipped => "unsupported stroke skipped",
         };
@@ -453,7 +461,7 @@ pub enum SvgStrokeRepresentation {
 pub enum SvgOnePointStrokeHandling {
     /// Preserve every one-point stroke as a visible round dot.
     PreserveDots,
-    /// Join runs of at least two nearby one-point strokes into a centerline path.
+    /// Join runs of at least two nearby one-point strokes into a continuous path.
     ConnectNearby,
 }
 
@@ -473,6 +481,7 @@ pub struct SvgOptions {
     title: Option<String>,
     group_opacity: f64,
     spline_tolerance: f64,
+    nominal_width_adjustment: f64,
     stroke_representation: SvgStrokeRepresentation,
     one_point_stroke_handling: SvgOnePointStrokeHandling,
     spline_conversion: SvgSplineConversion,
@@ -485,6 +494,7 @@ impl Default for SvgOptions {
             title: None,
             group_opacity: 1.0,
             spline_tolerance: DEFAULT_SPLINE_TOLERANCE,
+            nominal_width_adjustment: 0.0,
             stroke_representation: SvgStrokeRepresentation::PreserveAppearance,
             one_point_stroke_handling: SvgOnePointStrokeHandling::PreserveDots,
             spline_conversion: SvgSplineConversion::CubicFit,
@@ -517,6 +527,16 @@ impl SvgOptions {
     #[must_use]
     pub const fn with_spline_tolerance(mut self, tolerance: f64) -> Self {
         self.spline_tolerance = tolerance;
+        self
+    }
+
+    /// Adds a finite SVG-user-unit adjustment to stored nominal stroke widths.
+    ///
+    /// The default is `0.0`. Adjusted stored widths are clamped to zero. The
+    /// one-unit fallback for a missing stored width is not adjusted.
+    #[must_use]
+    pub const fn with_nominal_width_adjustment(mut self, adjustment: f64) -> Self {
+        self.nominal_width_adjustment = adjustment;
         self
     }
 
@@ -589,6 +609,12 @@ impl SvgOptions {
     #[must_use]
     pub const fn spline_tolerance(&self) -> f64 {
         self.spline_tolerance
+    }
+
+    /// Adjustment added to stored nominal stroke widths in SVG user units.
+    #[must_use]
+    pub const fn nominal_width_adjustment(&self) -> f64 {
+        self.nominal_width_adjustment
     }
 
     /// Current variable-factor representation.
@@ -968,6 +994,7 @@ impl<W: Write> SvgWriter<W> {
                     && let Some(run) = connected_one_point_run(
                         &strokes,
                         index,
+                        self.options.nominal_width_adjustment(),
                     )
                 {
                     let brush = brushes[index];
@@ -999,6 +1026,7 @@ impl<W: Write> SvgWriter<W> {
                 && let Some(run) = connected_one_point_run(
                     &strokes,
                     index,
+                    self.options.nominal_width_adjustment(),
                 )
             {
                 let brush = brushes[index];
@@ -1354,13 +1382,14 @@ impl<W: Write> SvgWriter<W> {
         if style.fill_style_id().is_some() {
             losses.add(SvgLossKind::FrameFillIgnored);
         }
-        let nominal_width = match style.brush_diameter() {
-            Some(width) => width,
-            None => {
-                losses.add(SvgLossKind::MissingWidthFallback);
-                1.0
-            }
-        };
+        let nominal_width =
+            match adjusted_nominal_width(style, self.options.nominal_width_adjustment())? {
+                Some(width) => width,
+                None => {
+                    losses.add(SvgLossKind::MissingWidthFallback);
+                    1.0
+                }
+            };
         let preserve_appearance =
             self.options.stroke_representation() == SvgStrokeRepresentation::PreserveAppearance;
         let stroke_width = if preserve_appearance && built.width.variable {
@@ -1463,12 +1492,14 @@ impl<W: Write> SvgWriter<W> {
         if spline_fit_fallback {
             losses.add(SvgLossKind::SplineFitSegmentToLine);
         }
+        let preserve_appearance =
+            self.options.stroke_representation() == SvgStrokeRepresentation::PreserveAppearance;
         add_factor_representation_losses(
             &mut losses,
             width.variable,
             opacity.variable,
             true,
-            SvgStrokeRepresentation::EditableCenterline,
+            self.options.stroke_representation(),
         );
         if width.incomplete {
             losses.add(SvgLossKind::MissingWidthFactorFallback);
@@ -1489,28 +1520,68 @@ impl<W: Write> SvgWriter<W> {
         if run.style.fill_style_id().is_some() {
             losses.add(SvgLossKind::FrameFillIgnored);
         }
-        let nominal_width = match run.style.brush_diameter() {
-            Some(value) => value,
-            None => {
-                losses.add(SvgLossKind::MissingWidthFallback);
-                1.0
-            }
-        };
+        let nominal_width =
+            match adjusted_nominal_width(run.style, self.options.nominal_width_adjustment())? {
+                Some(value) => value,
+                None => {
+                    losses.add(SvgLossKind::MissingWidthFallback);
+                    1.0
+                }
+            };
         self.apply_losses_count(&losses, stroke_index, source_count)?;
 
         let rendered_style = RenderStyle {
             color,
-            width: finite_svg_product(nominal_width, width.value, "stroke width")?.max(0.0),
-            opacity: (run.style.opacity() * opacity.value).clamp(0.0, 1.0),
+            width: if preserve_appearance && width.variable {
+                nominal_width
+            } else {
+                finite_svg_product(nominal_width, width.value, "stroke width")?
+            }
+            .max(0.0),
+            opacity: if preserve_appearance && opacity.variable {
+                run.style.opacity()
+            } else {
+                run.style.opacity() * opacity.value
+            }
+            .clamp(0.0, 1.0),
         };
-        match write_mark(&mut self.writer, &mark, rendered_style)? {
+        let outline_samples = connected_outline_samples(&run.bridge_points, &run.samples);
+        let smooth_outline = self.options.spline_conversion() == SvgSplineConversion::CubicFit;
+        let written = if preserve_appearance && opacity.variable {
+            write_variable_opacity_segments(
+                &mut self.writer,
+                &outline_samples,
+                rendered_style,
+                VariableOpacityOptions {
+                    nominal_width,
+                    stroke_index,
+                    tolerance: self.options.spline_tolerance(),
+                    closed: false,
+                    smooth: smooth_outline,
+                },
+            )?
+        } else if preserve_appearance && width.variable {
+            let outline = build_variable_width_outline(
+                &outline_samples,
+                nominal_width,
+                self.options.spline_tolerance(),
+                false,
+                smooth_outline,
+            )?;
+            write_filled_path(&mut self.writer, &outline, rendered_style)?
+        } else {
+            write_mark(&mut self.writer, &mark, rendered_style)?
+        };
+        match written {
             WrittenMark::CenterlinePath => {
                 self.report.paths_written += 1;
                 self.report.centerline_paths_written += 1;
             }
-            WrittenMark::FilledOutlinePath(_) | WrittenMark::Dot => {
-                unreachable!("a connected one-point run is a centerline path")
+            WrittenMark::FilledOutlinePath(count) => {
+                self.report.paths_written += count;
+                self.report.filled_outline_paths_written += count;
             }
+            WrittenMark::Dot => unreachable!("a connected one-point run is a path"),
         }
         self.report.strokes_written = self.report.strokes_written.saturating_add(source_count);
         Ok(())
@@ -1597,6 +1668,11 @@ fn validate_options(options: &SvgOptions) -> Result<()> {
     if !options.spline_tolerance.is_finite() || options.spline_tolerance <= 0.0 {
         return Err(Error::InvalidSplineTolerance {
             tolerance: options.spline_tolerance,
+        });
+    }
+    if !options.nominal_width_adjustment.is_finite() {
+        return Err(Error::InvalidNominalWidthAdjustment {
+            adjustment: options.nominal_width_adjustment,
         });
     }
     if options
@@ -1982,12 +2058,34 @@ fn one_point_connection_limit(
     diameter.max(0.0) * left_factor.min(right_factor) * 0.5
 }
 
+fn adjusted_nominal_width(style: VectorStrokeStyle, adjustment: f64) -> Result<Option<f64>> {
+    let Some(width) = style.brush_diameter() else {
+        return Ok(None);
+    };
+    apply_nominal_width_adjustment(width, adjustment).map(Some)
+}
+
+fn apply_nominal_width_adjustment(width: f64, adjustment: f64) -> Result<f64> {
+    let adjusted = width + adjustment;
+    if !adjusted.is_finite() {
+        return Err(Error::InvalidSvgNumber {
+            field: "adjusted nominal stroke width",
+            value: adjusted,
+        });
+    }
+    Ok(adjusted.max(0.0))
+}
+
 fn one_point_samples_are_nearby(
     style: VectorStrokeStyle,
+    nominal_width_adjustment: f64,
     left: OnePointStrokeSample,
     right: OnePointStrokeSample,
 ) -> bool {
-    let diameter = style.brush_diameter().unwrap_or(1.0);
+    let diameter = adjusted_nominal_width(style, nominal_width_adjustment)
+        .ok()
+        .flatten()
+        .unwrap_or(1.0);
     one_point_samples_are_nearby_for_diameter(diameter, left, right)
 }
 
@@ -2003,6 +2101,7 @@ fn one_point_samples_are_nearby_for_diameter(
 
 fn endpoint_is_nearby(
     style: VectorStrokeStyle,
+    nominal_width_adjustment: f64,
     endpoint: PointData,
     sample: OnePointStrokeSample,
 ) -> bool {
@@ -2011,7 +2110,7 @@ fn endpoint_is_nearby(
         width_factor: sample.width_factor,
         opacity_factor: sample.opacity_factor,
     };
-    one_point_samples_are_nearby(style, endpoint_sample, sample)
+    one_point_samples_are_nearby(style, nominal_width_adjustment, endpoint_sample, sample)
 }
 
 fn push_distinct_point(points: &mut Vec<PointData>, point: PointData) {
@@ -2026,6 +2125,7 @@ fn push_distinct_point(points: &mut Vec<PointData>, point: PointData) {
 fn connected_one_point_run(
     strokes: &[VectorStroke<'_>],
     start_index: usize,
+    nominal_width_adjustment: f64,
 ) -> Option<ConnectedOnePointRun> {
     let (style, first) = one_point_stroke_sample(*strokes.get(start_index)?)?;
     let mut samples = vec![first];
@@ -2035,7 +2135,12 @@ fn connected_one_point_run(
             break;
         };
         if next_style != style
-            || !one_point_samples_are_nearby(style, *samples.last().expect("nonempty"), next)
+            || !one_point_samples_are_nearby(
+                style,
+                nominal_width_adjustment,
+                *samples.last().expect("nonempty"),
+                next,
+            )
         {
             break;
         }
@@ -2053,7 +2158,7 @@ fn connected_one_point_run(
         .filter(|stroke| stroke.style() == Some(style))
         .and_then(|stroke| normalized_open_spline_samples(*stroke))
         .and_then(|points| points.last().map(|(point, _, _)| *point))
-        .filter(|point| endpoint_is_nearby(style, *point, first))
+        .filter(|point| endpoint_is_nearby(style, nominal_width_adjustment, *point, first))
     {
         push_distinct_point(&mut bridge_points, previous);
     }
@@ -2065,7 +2170,14 @@ fn connected_one_point_run(
         .filter(|stroke| stroke.style() == Some(style))
         .and_then(|stroke| normalized_open_spline_samples(*stroke))
         .and_then(|points| points.first().map(|(point, _, _)| *point))
-        .filter(|point| endpoint_is_nearby(style, *point, *samples.last().expect("nonempty")))
+        .filter(|point| {
+            endpoint_is_nearby(
+                style,
+                nominal_width_adjustment,
+                *point,
+                *samples.last().expect("nonempty"),
+            )
+        })
     {
         push_distinct_point(&mut bridge_points, next);
     }
@@ -2075,6 +2187,37 @@ fn connected_one_point_run(
         samples,
         bridge_points,
     })
+}
+
+fn connected_outline_samples(
+    bridge_points: &[PointData],
+    samples: &[OnePointStrokeSample],
+) -> Vec<OutlineSample> {
+    let first = samples.first().expect("a connected run is nonempty");
+    let last = samples.last().expect("a connected run is nonempty");
+    bridge_points
+        .iter()
+        .map(|point| {
+            let factors = samples
+                .iter()
+                .find(|sample| coordinates_nearly_equal(sample.point.position, point.position))
+                .unwrap_or_else(|| {
+                    if length_squared(subtract(point.position, first.point.position))
+                        <= length_squared(subtract(point.position, last.point.position))
+                    {
+                        first
+                    } else {
+                        last
+                    }
+                });
+            OutlineSample {
+                position: point.position,
+                width_factor: factors.width_factor,
+                opacity_factor: factors.opacity_factor,
+                flags: point.flags,
+            }
+        })
+        .collect()
 }
 
 fn coordinates_nearly_equal(left: Coordinate, right: Coordinate) -> bool {
@@ -3647,6 +3790,7 @@ mod tests {
             SvgOptions::default().spline_tolerance(),
             DEFAULT_SPLINE_TOLERANCE
         );
+        assert_eq!(SvgOptions::default().nominal_width_adjustment(), 0.0);
         assert_eq!(
             SvgOptions::default().stroke_representation(),
             SvgStrokeRepresentation::PreserveAppearance
@@ -3662,7 +3806,8 @@ mod tests {
         let editable_polyline = SvgOptions::default()
             .with_stroke_representation(SvgStrokeRepresentation::EditableCenterline)
             .with_one_point_stroke_handling(SvgOnePointStrokeHandling::ConnectNearby)
-            .with_spline_conversion(SvgSplineConversion::Polyline);
+            .with_spline_conversion(SvgSplineConversion::Polyline)
+            .with_nominal_width_adjustment(-0.5);
         assert_eq!(
             editable_polyline.stroke_representation(),
             SvgStrokeRepresentation::EditableCenterline
@@ -3675,6 +3820,7 @@ mod tests {
             editable_polyline.one_point_stroke_handling(),
             SvgOnePointStrokeHandling::ConnectNearby
         );
+        assert_eq!(editable_polyline.nominal_width_adjustment(), -0.5);
         assert!(SvgCanvas::new(0.0, 10.0).is_err());
         assert!(SvgCanvas::new(f64::NAN, 10.0).is_err());
         let canvas = SvgCanvas::new(10.0, 20.0).unwrap();
@@ -3697,6 +3843,14 @@ mod tests {
                 SvgOptions::default().with_spline_tolerance(0.0),
             ),
             Err(Error::InvalidSplineTolerance { .. })
+        ));
+        assert!(matches!(
+            SvgWriter::new(
+                Cursor::new(Vec::new()),
+                canvas,
+                SvgOptions::default().with_nominal_width_adjustment(f64::NAN),
+            ),
+            Err(Error::InvalidNominalWidthAdjustment { .. })
         ));
     }
 
@@ -3722,6 +3876,47 @@ mod tests {
             sample(0.0, Some(0.5)),
             sample(1.01, Some(1.0)),
         ));
+    }
+
+    #[test]
+    fn nominal_width_adjustment_is_absolute_and_clamped() {
+        assert_eq!(apply_nominal_width_adjustment(4.0, -0.5).unwrap(), 3.5);
+        assert_eq!(apply_nominal_width_adjustment(0.25, -0.5).unwrap(), 0.0);
+        assert!(matches!(
+            apply_nominal_width_adjustment(f64::MAX, f64::MAX),
+            Err(Error::InvalidSvgNumber { .. })
+        ));
+    }
+
+    #[test]
+    fn connected_outline_keeps_per_point_width_and_opacity_factors() {
+        let sample = |x, width_factor, opacity_factor| OnePointStrokeSample {
+            point: point(x, 0.0, &[]),
+            width_factor: Some(width_factor),
+            opacity_factor: Some(opacity_factor),
+        };
+        let samples = [sample(0.0, 0.25, 0.4), sample(2.0, 1.0, 0.9)];
+        let bridge_points = [
+            point(-1.0, 0.0, &[]),
+            samples[0].point,
+            samples[1].point,
+            point(3.0, 0.0, &[]),
+        ];
+
+        let outline = connected_outline_samples(&bridge_points, &samples);
+        assert_eq!(outline.len(), 4);
+        assert_eq!(outline[0].width_factor, Some(0.25));
+        assert_eq!(outline[0].opacity_factor, Some(0.4));
+        assert_eq!(outline[1].width_factor, Some(0.25));
+        assert_eq!(outline[1].opacity_factor, Some(0.4));
+        assert_eq!(outline[2].width_factor, Some(1.0));
+        assert_eq!(outline[2].opacity_factor, Some(0.9));
+        assert_eq!(outline[3].width_factor, Some(1.0));
+        assert_eq!(outline[3].opacity_factor, Some(0.9));
+
+        let path = build_variable_width_outline(&outline, 8.0, 0.5, false, true).unwrap();
+        assert!(path.contains("M-1 1"));
+        assert!(path.contains("3 -4"));
     }
 
     #[test]
