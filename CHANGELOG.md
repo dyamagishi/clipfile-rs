@@ -7,6 +7,56 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- `BrushStyle::is_eraser` identifies the observed destination-out brush
+  composite mode used by vector eraser strokes.
+- `clipfile-svg` exposes `SvgOptions::with_nominal_width_adjustment` for
+  renderer-specific absolute stroke-width calibration while retaining stored
+  per-point width factors.
+
+### Fixed
+
+- Image-cel tracks with no `ImageCelName` curve are now exposed as empty cel
+  tracks, allowing valid animation folders with no assigned timeline cels.
+- Animation readers now select only the `FirstTrack` chain for the requested
+  timeline when multiple timelines share one track bank, instead of rejecting
+  the other timeline chains as unreachable tracks.
+- Default animation reads now follow `FirstTimeLine` links and honor the
+  animation bank's zero-based `CurrentIndex`, rather than treating the head of
+  the timeline list as the selected timeline.
+- Discontinuous cel animation loops now retain every `ActionNodeClip` segment;
+  later loops are evaluated with their own local `TimeClip` instead of being
+  discarded after the first curve.
+- `clipfile-svg` now applies vector eraser strokes as order-preserving SVG
+  masks instead of rendering their stored color as an ordinary thick line.
+- Connected one-point vector runs now preserve per-point width and opacity
+  variation when appearance-preserving SVG output is selected, instead of
+  averaging the factors across the complete run.
+
+## [clipfile-svg 0.2.2] - 2026-08-07
+
+### Added
+
+- `SvgGroupOptions::with_transform_matrix` writes a validated finite SVG
+  affine matrix on a nested group.
+
+## [1.2.2] - 2026-08-07
+
+### Added
+
+- Typed half-open `AnimationTimeClip` metadata is exposed on generic and
+  image-cel tracks.
+
+### Fixed
+
+- `CelTrack::cel_at_frame` now returns no cel outside the track's active
+  `TimeClip`, instead of retaining the final preceding cel indefinitely.
+- `CelTrack::cel_at_frame` now evaluates curve keys relative to the start of
+  their `TimeClip`, fixing frozen cel selection on timelines whose start is
+  not frame zero.
+- Timeline end-frame documentation now reflects the stored exclusive bound.
+
 ## [clipfile-svg 0.2.1] - 2026-08-04
 
 ### Added

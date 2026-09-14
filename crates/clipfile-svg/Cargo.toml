@@ -1,6 +1,6 @@
 [package]
 name = "clipfile-svg"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 rust-version = "1.85"
 description = "Loss-aware streaming SVG adapter for clipfile vector data"
@@ -14,7 +14,7 @@ categories = ["encoding", "graphics", "multimedia::images"]
 publish = ["crates-io"]
 
 [dependencies]
-clipfile = { path = "../..", version = "1.2.1", features = ["sqlite"] }
+clipfile = { path = "../..", version = "1.2.2", features = ["sqlite"] }
 quick-xml = { version = "0.41.0", default-features = false }
 
 [lints.rust]

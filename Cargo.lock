@@ -56,7 +56,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "clipfile"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "flate2",
  "image",
@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "clipfile-svg"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "clipfile",
  "quick-xml",
