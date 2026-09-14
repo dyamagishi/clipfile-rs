@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let timeline = animation.timeline();
     println!(
-        "timeline {}: name={:?}, {} fps, frames {}..={}, current {:?}",
+        "timeline {}: name={:?}, {} fps, frames {}..{}, current {:?}",
         timeline.id(),
         timeline.name(),
         timeline.frame_rate(),

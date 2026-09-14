@@ -180,7 +180,7 @@ fn inspect_animation_if_requested<R: std::io::Read + std::io::Seek>(
                 .filter(|track| track.kind().is_camera_2d())
                 .count();
             println!(
-                "animation: timeline {}, {} fps, frames {}..={}, {} tracks, {} curves / {} keys, {} values, {} secondary mixers, {} camera tracks, {} cel tracks / {} selected keys",
+                "animation: timeline {}, {} fps, frames {}..{}, {} tracks, {} curves / {} keys, {} values, {} secondary mixers, {} camera tracks, {} cel tracks / {} selected keys",
                 animation.timeline().id(),
                 animation.timeline().frame_rate(),
                 animation.timeline().start_frame(),

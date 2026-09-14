@@ -42,9 +42,10 @@ mod writer;
 #[cfg(feature = "animation")]
 pub use animation::{
     Animation, AnimationCurve, AnimationCurveKeyframe, AnimationCurveKeyframeValues,
-    AnimationTrack, AnimationTrackKind, AnimationTrackValue, AnimationTrackValueEntry,
-    Camera2DLayerData, Camera2DPoint, Camera2DTrackValues, Camera2DTransform, CelKeyframe,
-    CelTrack, SecondaryAnimationCurve, SecondaryAnimationCurveKeyframe, Timeline,
+    AnimationTimeClip, AnimationTrack, AnimationTrackKind, AnimationTrackValue,
+    AnimationTrackValueEntry, Camera2DLayerData, Camera2DPoint, Camera2DTrackValues,
+    Camera2DTransform, CelKeyframe, CelTrack, SecondaryAnimationCurve,
+    SecondaryAnimationCurveKeyframe, Timeline,
 };
 #[cfg(all(feature = "animation", feature = "write"))]
 pub use animation::{

@@ -74,7 +74,7 @@ impl Timeline {
         self.start_frame
     }
 
-    /// Inclusive playback-range end in display frames.
+    /// Exclusive playback-range end in display frames.
     #[must_use]
     pub const fn end_frame(&self) -> f64 {
         self.end_frame
@@ -93,6 +93,60 @@ pub struct CelKeyframe {
     time_60hz: f32,
     value: f32,
     tag: String,
+}
+
+/// Active time span stored by an animation track's `TimeClip` mixer object.
+///
+/// `start` and `end` use the timebase reported by [`Self::rate`]. The end is
+/// exclusive: a display frame whose converted position equals `end` is no
+/// longer inside the clip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnimationTimeClip {
+    start: f64,
+    end: f64,
+    rate: f64,
+}
+
+impl AnimationTimeClip {
+    /// Inclusive active-range start in the clip's own timebase.
+    #[must_use]
+    pub const fn start(self) -> f64 {
+        self.start
+    }
+
+    /// Exclusive active-range end in the clip's own timebase.
+    #[must_use]
+    pub const fn end(self) -> f64 {
+        self.end
+    }
+
+    /// Units per second used by [`Self::start`] and [`Self::end`].
+    #[must_use]
+    pub const fn rate(self) -> f64 {
+        self.rate
+    }
+
+    /// Whether a display-frame position lies within this half-open span.
+    #[must_use]
+    pub fn contains_display_frame(self, display_frame: f64, frame_rate: f64) -> bool {
+        if !display_frame.is_finite() || !frame_rate.is_finite() || frame_rate <= 0.0 {
+            return false;
+        }
+        let position = display_frame * self.rate / frame_rate;
+        position + 1.0e-7 >= self.start && position < self.end - 1.0e-7
+    }
+
+    /// Converts an active display-frame position to the track curve's local
+    /// 60 Hz timebase, whose zero is the start of this `TimeClip`.
+    #[must_use]
+    pub fn local_time_60hz(self, display_frame: f64, frame_rate: f64) -> Option<f64> {
+        if !self.contains_display_frame(display_frame, frame_rate) {
+            return None;
+        }
+        let position = display_frame * self.rate / frame_rate;
+        let local_time = (position - self.start) * 60.0 / self.rate;
+        local_time.is_finite().then_some(local_time.max(0.0))
+    }
 }
 
 impl CelKeyframe {
@@ -121,6 +175,43 @@ pub struct CelTrack {
     id: i64,
     layer_id: i64,
     keyframes: Vec<CelKeyframe>,
+    segments: Vec<CelTrackSegment>,
+}
+
+/// One independently placed cel-selection curve in a timeline track.
+///
+/// A repeated animation loop is stored as another segment with its own
+/// `TimeClip` and local keyframe curve. Gaps between segments remain blank.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CelTrackSegment {
+    time_clip: Option<AnimationTimeClip>,
+    keyframes: Vec<CelKeyframe>,
+}
+
+impl CelTrackSegment {
+    /// Active half-open timeline span for this independently placed curve.
+    #[must_use]
+    pub const fn time_clip(&self) -> Option<AnimationTimeClip> {
+        self.time_clip
+    }
+
+    /// Sorted cel-selection keys in this segment's local 60 Hz timebase.
+    #[must_use]
+    pub fn keyframes(&self) -> &[CelKeyframe] {
+        &self.keyframes
+    }
+
+    fn cel_at_frame(&self, display_frame: f64, frame_rate: f64) -> Option<&str> {
+        let tick = match self.time_clip {
+            Some(time_clip) => time_clip.local_time_60hz(display_frame, frame_rate)?,
+            None => display_frame * 60.0 / frame_rate,
+        };
+        let index = self
+            .keyframes
+            .partition_point(|key| f64::from(key.time_60hz) <= tick + 1e-5)
+            .checked_sub(1)?;
+        self.keyframes.get(index).map(CelKeyframe::tag)
+    }
 }
 
 /// Raw numeric kind stored in `Track.TrackKind`.
@@ -859,6 +950,7 @@ pub struct AnimationTrack {
     action_mixer_present: bool,
     secondary_action_mixer_present: bool,
     value_map_present: bool,
+    time_clips: Vec<AnimationTimeClip>,
     values: Vec<AnimationTrackValueEntry>,
     curves: Vec<AnimationCurve>,
     secondary_curves: Vec<SecondaryAnimationCurve>,
@@ -908,6 +1000,21 @@ impl AnimationTrack {
         self.value_map_present
     }
 
+    /// First active half-open span decoded from the primary mixer.
+    ///
+    /// Use [`Self::time_clips`] when a track contains repeated or discontinuous
+    /// action clips.
+    #[must_use]
+    pub fn time_clip(&self) -> Option<AnimationTimeClip> {
+        self.time_clips.first().copied()
+    }
+
+    /// Every `TimeClip` decoded from the primary mixer, in serialized order.
+    #[must_use]
+    pub fn time_clips(&self) -> &[AnimationTimeClip] {
+        &self.time_clips
+    }
+
     /// Every validated entry from the inline `TrackValueMap`.
     #[must_use]
     pub fn values(&self) -> &[AnimationTrackValueEntry] {
@@ -950,10 +1057,27 @@ impl CelTrack {
         self.layer_id
     }
 
-    /// Sorted cel-selection keys.
+    /// Cel-selection keys flattened in serialized segment order.
+    ///
+    /// Local times restart at zero for independently placed segments. Use
+    /// [`Self::segments`] when their timeline placement matters.
     #[must_use]
     pub fn keyframes(&self) -> &[CelKeyframe] {
         &self.keyframes
+    }
+
+    /// First active half-open span decoded from this cel track.
+    ///
+    /// Use [`Self::segments`] for repeated or discontinuous action clips.
+    #[must_use]
+    pub fn time_clip(&self) -> Option<AnimationTimeClip> {
+        self.segments.first().and_then(CelTrackSegment::time_clip)
+    }
+
+    /// Independently placed cel curves in serialized timeline order.
+    #[must_use]
+    pub fn segments(&self) -> &[CelTrackSegment] {
+        &self.segments
     }
 
     /// Returns the active cel tag at a display-frame position.
@@ -962,12 +1086,9 @@ impl CelTrack {
         if !display_frame.is_finite() || !frame_rate.is_finite() || frame_rate <= 0.0 {
             return None;
         }
-        let tick = display_frame * 60.0 / frame_rate;
-        let index = self
-            .keyframes
-            .partition_point(|key| f64::from(key.time_60hz) <= tick + 1e-5)
-            .checked_sub(1)?;
-        self.keyframes.get(index).map(CelKeyframe::tag)
+        self.segments
+            .iter()
+            .find_map(|segment| segment.cel_at_frame(display_frame, frame_rate))
     }
 }
 
@@ -1211,7 +1332,7 @@ impl Database {
             timelines.push(Timeline {
                 id,
                 bank_id: row.get(1)?,
-                next_timeline_id: row.get(2)?,
+                next_timeline_id: row.get::<_, Option<i64>>(2)?.filter(|id| *id != 0),
                 first_track_id: row.get::<_, Option<i64>>(3)?.filter(|id| *id != 0),
                 name: name.map(str::to_owned),
                 frame_rate,
@@ -1548,7 +1669,7 @@ impl<R: Read + Seek> ClipFile<R> {
         if timelines.is_empty() {
             return Ok(None);
         }
-        let preferred = preferred_timeline_id(database)?;
+        let preferred = preferred_timeline_id(database, &timelines)?;
         let timeline = if let Some(id) = preferred {
             timelines
                 .iter()
@@ -1611,45 +1732,57 @@ impl<R: Read + Seek> ClipFile<R> {
                 })?),
                 None => None,
             };
-            let curves = if let Some(identifier) = source.external_identifier.as_deref() {
-                let object = self
-                    .resolve_external_object(database, identifier)?
-                    .ok_or_else(|| {
-                        animation_error(format!(
-                            "animation track {} references missing mixer data",
+            let (curves, located_curves, located_time_clips, action_clip_offsets) =
+                if let Some(identifier) = source.external_identifier.as_deref() {
+                    let object = self
+                        .resolve_external_object(database, identifier)?
+                        .ok_or_else(|| {
+                            animation_error(format!(
+                                "animation track {} references missing mixer data",
+                                source.id
+                            ))
+                        })?;
+                    let ExternalBody::LengthPrefixedZlib(stream) = object.body() else {
+                        return Err(animation_error(format!(
+                            "animation track {} mixer is not a length-prefixed zlib stream",
                             source.id
-                        ))
-                    })?;
-                let ExternalBody::LengthPrefixedZlib(stream) = object.body() else {
-                    return Err(animation_error(format!(
-                        "animation track {} mixer is not a length-prefixed zlib stream",
-                        source.id
-                    )));
+                        )));
+                    };
+                    if stream.byte_order() != ByteOrder::LittleEndian {
+                        return Err(animation_error(format!(
+                            "animation track {} mixer uses an unexpected length byte order",
+                            source.id
+                        )));
+                    }
+                    let compressed =
+                        self.read_length_prefixed_zlib(stream, limits.max_animation_bytes())?;
+                    let mixer = decompress_mixer(&compressed, limits.max_animation_bytes())?;
+                    let located_curves = parse_animation_curves_located(&mixer, limits)?;
+                    let located_time_clips = parse_animation_time_clips_located(&mixer, limits)?;
+                    let action_clip_offsets = parse_animation_action_clip_offsets(&mixer, limits)?;
+                    let curves = located_curves
+                        .iter()
+                        .map(|located| located.curve.clone())
+                        .collect::<Vec<_>>();
+                    for curve in &curves {
+                        total_curve_keys = total_curve_keys
+                            .checked_add(curve.keyframes.len() as u64)
+                            .ok_or(Error::OffsetOverflow)?;
+                        enforce_item_limit(
+                            total_curve_keys,
+                            limits.max_animation_items(),
+                            "animation curve keys",
+                        )?;
+                    }
+                    (
+                        curves,
+                        located_curves,
+                        located_time_clips,
+                        action_clip_offsets,
+                    )
+                } else {
+                    (Vec::new(), Vec::new(), Vec::new(), Vec::new())
                 };
-                if stream.byte_order() != ByteOrder::LittleEndian {
-                    return Err(animation_error(format!(
-                        "animation track {} mixer uses an unexpected length byte order",
-                        source.id
-                    )));
-                }
-                let compressed =
-                    self.read_length_prefixed_zlib(stream, limits.max_animation_bytes())?;
-                let mixer = decompress_mixer(&compressed, limits.max_animation_bytes())?;
-                let curves = parse_animation_curves(&mixer, limits)?;
-                for curve in &curves {
-                    total_curve_keys = total_curve_keys
-                        .checked_add(curve.keyframes.len() as u64)
-                        .ok_or(Error::OffsetOverflow)?;
-                    enforce_item_limit(
-                        total_curve_keys,
-                        limits.max_animation_items(),
-                        "animation curve keys",
-                    )?;
-                }
-                curves
-            } else {
-                Vec::new()
-            };
             let secondary_curves = if let Some(identifier) =
                 source.secondary_external_identifier.as_deref()
             {
@@ -1732,37 +1865,27 @@ impl<R: Read + Seek> ClipFile<R> {
                 let layer_id = layer_id.ok_or_else(|| {
                     animation_error(format!("cel track {} has no layer UUID", source.id))
                 })?;
-                let curve = curves
+                let segments = build_cel_track_segments(
+                    source.id,
+                    &located_curves,
+                    &located_time_clips,
+                    &action_clip_offsets,
+                )?;
+                let keyframes = segments
                     .iter()
-                    .find(|curve| curve.kind == "ImageCelName")
-                    .ok_or_else(|| {
-                        animation_error(format!(
-                            "cel track {} mixer has no ImageCelName curve",
-                            source.id
-                        ))
-                    })?;
-                let keyframes = curve
-                    .keyframes
-                    .iter()
-                    .map(|key| {
-                        Ok(CelKeyframe {
-                            time_60hz: key.time_60hz,
-                            value: key.value,
-                            tag: key.tag.clone().ok_or_else(|| {
-                                animation_error(format!(
-                                    "cel track {} ImageCelName key has no tag",
-                                    source.id
-                                ))
-                            })?,
-                        })
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                    .flat_map(|segment| segment.keyframes.iter().cloned())
+                    .collect();
                 tracks.push(CelTrack {
                     id: source.id,
                     layer_id,
                     keyframes,
+                    segments,
                 });
             }
+            let time_clips = located_time_clips
+                .iter()
+                .map(|located| located.time_clip)
+                .collect();
             animation_tracks.push(AnimationTrack {
                 id: source.id,
                 kind,
@@ -1771,6 +1894,7 @@ impl<R: Read + Seek> ClipFile<R> {
                 action_mixer_present: source.external_identifier.is_some(),
                 secondary_action_mixer_present: source.secondary_external_identifier.is_some(),
                 value_map_present: source.value_map.is_some(),
+                time_clips,
                 values,
                 curves,
                 secondary_curves,
@@ -1792,6 +1916,88 @@ impl<R: Read + Seek> ClipFile<R> {
             animation_tracks,
         })
     }
+}
+
+fn build_cel_track_segments(
+    track_id: i64,
+    curves: &[LocatedAnimationCurve],
+    time_clips: &[LocatedAnimationTimeClip],
+    action_clip_offsets: &[usize],
+) -> Result<Vec<CelTrackSegment>> {
+    let image_curve_count = curves
+        .iter()
+        .filter(|located| located.curve.kind == "ImageCelName")
+        .count();
+    if image_curve_count == 0 {
+        return Ok(Vec::new());
+    }
+
+    if action_clip_offsets.is_empty() {
+        let curve = curves
+            .iter()
+            .find(|located| located.curve.kind == "ImageCelName")
+            .expect("image curve count was checked");
+        return Ok(vec![CelTrackSegment {
+            time_clip: time_clips.first().map(|located| located.time_clip),
+            keyframes: cel_keyframes(track_id, &curve.curve)?,
+        }]);
+    }
+
+    let mut segments = Vec::new();
+    for (index, start) in action_clip_offsets.iter().copied().enumerate() {
+        let end = action_clip_offsets
+            .get(index + 1)
+            .copied()
+            .unwrap_or(usize::MAX);
+        let mut image_curves = curves.iter().filter(|located| {
+            located.offset >= start && located.offset < end && located.curve.kind == "ImageCelName"
+        });
+        let Some(curve) = image_curves.next() else {
+            continue;
+        };
+        if image_curves.next().is_some() {
+            return Err(animation_error(format!(
+                "cel track {track_id} action clip contains multiple ImageCelName curves"
+            )));
+        }
+        let mut matching_time_clips = time_clips
+            .iter()
+            .filter(|located| located.offset >= start && located.offset < end);
+        let time_clip = matching_time_clips.next().ok_or_else(|| {
+            animation_error(format!("cel track {track_id} action clip has no TimeClip"))
+        })?;
+        if matching_time_clips.next().is_some() {
+            return Err(animation_error(format!(
+                "cel track {track_id} action clip contains multiple TimeClip objects"
+            )));
+        }
+        segments.push(CelTrackSegment {
+            time_clip: Some(time_clip.time_clip),
+            keyframes: cel_keyframes(track_id, &curve.curve)?,
+        });
+    }
+    if segments.len() != image_curve_count {
+        return Err(animation_error(format!(
+            "cel track {track_id} has ImageCelName curves outside ActionNodeClip objects"
+        )));
+    }
+    Ok(segments)
+}
+
+fn cel_keyframes(track_id: i64, curve: &AnimationCurve) -> Result<Vec<CelKeyframe>> {
+    curve
+        .keyframes
+        .iter()
+        .map(|key| {
+            Ok(CelKeyframe {
+                time_60hz: key.time_60hz,
+                value: key.value,
+                tag: key.tag.clone().ok_or_else(|| {
+                    animation_error(format!("cel track {track_id} ImageCelName key has no tag"))
+                })?,
+            })
+        })
+        .collect()
 }
 
 #[cfg(feature = "write")]
@@ -2895,11 +3101,6 @@ fn animation_clone_timeline_chain(
         }
     }
     let Some(mut current) = first_track_id else {
-        if !by_id.is_empty() {
-            return Err(Error::InvalidWrite {
-                reason: format!("target timeline {timeline_id} has tracks but no FirstTrack"),
-            });
-        }
         return Ok((bank_id, None, 0));
     };
     let mut visited = BTreeMap::<i64, ()>::new();
@@ -2921,11 +3122,6 @@ fn animation_clone_timeline_chain(
             Some(next) => current = *next,
             None => break,
         }
-    }
-    if visited.len() != by_id.len() {
-        return Err(Error::InvalidWrite {
-            reason: format!("target timeline {timeline_id} track chain contains unreachable rows"),
-        });
     }
     Ok((bank_id, Some(current), visited.len() as u64))
 }
@@ -4787,25 +4983,112 @@ struct AnimationTrackSource {
     layer_uuid: Option<[u8; 16]>,
 }
 
-fn preferred_timeline_id(database: &Database) -> Result<Option<i64>> {
+fn preferred_timeline_id(database: &Database, timelines: &[Timeline]) -> Result<Option<i64>> {
     if !database
         .schema()
         .has_column("AnimationCutBank", "FirstTimeLine")
     {
         return Ok(None);
     }
-    let sql = if database.schema().has_column("AnimationCutBank", "Enable") {
-        "SELECT FirstTimeLine FROM AnimationCutBank \
-         WHERE Enable != 0 ORDER BY MainId LIMIT 1"
+    let current_index = if database
+        .schema()
+        .has_column("AnimationCutBank", "CurrentIndex")
+    {
+        "CurrentIndex"
     } else {
-        "SELECT FirstTimeLine FROM AnimationCutBank ORDER BY MainId LIMIT 1"
+        "NULL"
     };
-    Ok(database
+    let sql = if database.schema().has_column("AnimationCutBank", "Enable") {
+        format!(
+            "SELECT FirstTimeLine, {current_index} FROM AnimationCutBank \
+             WHERE Enable != 0 ORDER BY MainId LIMIT 1"
+        )
+    } else {
+        format!(
+            "SELECT FirstTimeLine, {current_index} FROM AnimationCutBank ORDER BY MainId LIMIT 1"
+        )
+    };
+    let Some((first_timeline_id, current_index)) = database
         .connection()
-        .query_row(sql, [], |row| row.get::<_, Option<i64>>(0))
+        .query_row(&sql, [], |row| {
+            Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?))
+        })
         .optional()?
-        .flatten()
-        .filter(|id| *id != 0))
+    else {
+        return Ok(None);
+    };
+    let Some(first_timeline_id) = first_timeline_id.filter(|id| *id != 0) else {
+        return Ok(None);
+    };
+    selected_timeline_id(timelines, first_timeline_id, current_index.unwrap_or(0)).map(Some)
+}
+
+fn selected_timeline_id(
+    timelines: &[Timeline],
+    first_timeline_id: i64,
+    current_index: i64,
+) -> Result<i64> {
+    if current_index < 0 {
+        return Err(animation_error(format!(
+            "AnimationCutBank has negative CurrentIndex {current_index}"
+        )));
+    }
+    let by_id = timelines
+        .iter()
+        .map(|timeline| (timeline.id, timeline))
+        .collect::<BTreeMap<_, _>>();
+    if by_id.len() != timelines.len() {
+        return Err(animation_error("animation contains duplicate timeline IDs"));
+    }
+    let bank_id = by_id
+        .get(&first_timeline_id)
+        .ok_or_else(|| {
+            animation_error(format!(
+                "AnimationCutBank references missing timeline {first_timeline_id}"
+            ))
+        })?
+        .bank_id;
+    let mut current = first_timeline_id;
+    let mut visited = BTreeMap::new();
+    let mut chain = Vec::new();
+    loop {
+        if visited.insert(current, ()).is_some() {
+            return Err(animation_error(format!(
+                "timeline chain is cyclic at timeline {current}"
+            )));
+        }
+        let timeline = by_id.get(&current).ok_or_else(|| {
+            animation_error(format!(
+                "timeline chain references missing timeline {current}"
+            ))
+        })?;
+        if timeline.bank_id != bank_id {
+            return Err(animation_error(format!(
+                "timeline chain crosses from bank {bank_id} to bank {}",
+                timeline.bank_id
+            )));
+        }
+        chain.push(current);
+        let Some(next) = timeline.next_timeline_id else {
+            break;
+        };
+        current = next;
+        if chain.len() > timelines.len() {
+            return Err(animation_error(
+                "timeline chain exceeds available timelines",
+            ));
+        }
+    }
+    let index = usize::try_from(current_index).map_err(|_| {
+        animation_error(format!(
+            "AnimationCutBank CurrentIndex {current_index} is outside its timeline chain"
+        ))
+    })?;
+    chain.get(index).copied().ok_or_else(|| {
+        animation_error(format!(
+            "AnimationCutBank CurrentIndex {current_index} is outside its timeline chain"
+        ))
+    })
 }
 
 fn animation_track_sources(
@@ -4894,13 +5177,21 @@ fn animation_track_sources(
         });
     }
     let has_track_chain = database.schema().has_column("Track", "TrackNextIndex");
-    if let Some(first_track_id) = timeline.first_track_id.filter(|_| has_track_chain) {
-        validate_track_chain(&sources, first_track_id)?;
+    if has_track_chain {
+        if let Some(first_track_id) = timeline.first_track_id {
+            let reachable = validate_track_chain(&sources, first_track_id)?;
+            sources.retain(|source| reachable.contains_key(&source.id));
+        } else {
+            sources.clear();
+        }
     }
     Ok(sources)
 }
 
-fn validate_track_chain(sources: &[AnimationTrackSource], first_track_id: i64) -> Result<()> {
+fn validate_track_chain(
+    sources: &[AnimationTrackSource],
+    first_track_id: i64,
+) -> Result<BTreeMap<i64, ()>> {
     let by_id = sources
         .iter()
         .map(|source| (source.id, source.next_track_id))
@@ -4920,12 +5211,7 @@ fn validate_track_chain(sources: &[AnimationTrackSource], first_track_id: i64) -
             .get(&id)
             .ok_or_else(|| animation_error(format!("timeline track {id} is missing")))?;
     }
-    if visited.len() != sources.len() {
-        return Err(animation_error(
-            "timeline track chain contains unreachable tracks",
-        ));
-    }
-    Ok(())
+    Ok(visited)
 }
 
 fn nonzero_track_id(value: Option<i64>) -> Option<i64> {
@@ -5373,7 +5659,213 @@ fn read_u32_optional(bytes: &[u8], cursor: &mut usize) -> Option<u32> {
     Some(u32::from_le_bytes(value.try_into().ok()?))
 }
 
-fn parse_animation_curves(bytes: &[u8], limits: Limits) -> Result<Vec<AnimationCurve>> {
+fn parse_animation_action_clip_offsets(bytes: &[u8], limits: Limits) -> Result<Vec<usize>> {
+    let (strings, data_start) = parse_string_table_with_data_start(bytes, limits)?;
+    let Some(action_clip_id) = string_id_optional(&strings, "ActionNodeClip") else {
+        return Ok(Vec::new());
+    };
+    let Some(null_id) = string_id_optional(&strings, "null") else {
+        return Err(animation_error(
+            "animation mixer declares ActionNodeClip but has no null type",
+        ));
+    };
+    let Some(time_clip_id) = string_id_optional(&strings, "TimeClip") else {
+        return Err(animation_error(
+            "animation mixer declares ActionNodeClip but has no TimeClip type",
+        ));
+    };
+    let mut offsets = Vec::new();
+    for object_start in data_start..=bytes.len().saturating_sub(4) {
+        let mut cursor = object_start;
+        if read_u32_optional(bytes, &mut cursor) != Some(action_clip_id)
+            || read_u32_optional(bytes, &mut cursor) != Some(null_id)
+        {
+            continue;
+        }
+        let Some(property_count) = read_u32_optional(bytes, &mut cursor) else {
+            continue;
+        };
+        if property_count > 8 {
+            continue;
+        }
+        let mut valid = true;
+        for _ in 0..property_count {
+            let Some(property_id) = read_u32_optional(bytes, &mut cursor) else {
+                valid = false;
+                break;
+            };
+            let Some(value_id) = read_u32_optional(bytes, &mut cursor) else {
+                valid = false;
+                break;
+            };
+            if property_id as usize >= strings.len() || value_id as usize >= strings.len() {
+                valid = false;
+                break;
+            }
+        }
+        let Some(field_count) = valid
+            .then(|| read_u32_optional(bytes, &mut cursor))
+            .flatten()
+        else {
+            continue;
+        };
+        if !(1..=64).contains(&field_count)
+            || read_u32_optional(bytes, &mut cursor) != Some(time_clip_id)
+        {
+            continue;
+        }
+        enforce_item_limit(
+            offsets.len() as u64 + 1,
+            limits.max_animation_items(),
+            "animation ActionNodeClip objects",
+        )?;
+        offsets.push(object_start);
+    }
+    if offsets.is_empty() {
+        Err(animation_error(
+            "animation mixer declares ActionNodeClip but its objects could not be decoded",
+        ))
+    } else {
+        Ok(offsets)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LocatedAnimationTimeClip {
+    offset: usize,
+    time_clip: AnimationTimeClip,
+}
+
+fn parse_animation_time_clips_located(
+    bytes: &[u8],
+    limits: Limits,
+) -> Result<Vec<LocatedAnimationTimeClip>> {
+    let (strings, data_start) = parse_string_table_with_data_start(bytes, limits)?;
+    let Some(time_clip_id) = string_id_optional(&strings, "TimeClip") else {
+        return Ok(Vec::new());
+    };
+    let Some(null_id) = string_id_optional(&strings, "null") else {
+        return Err(animation_error(
+            "animation mixer declares TimeClip but has no null type",
+        ));
+    };
+    let Some(double_id) = string_id_optional(&strings, "Double") else {
+        return Err(animation_error(
+            "animation mixer declares TimeClip but has no Double type",
+        ));
+    };
+    let Some(start_id) = string_id_optional(&strings, "Start") else {
+        return Err(animation_error(
+            "animation mixer declares TimeClip but has no Start field",
+        ));
+    };
+    let Some(end_id) = string_id_optional(&strings, "End") else {
+        return Err(animation_error(
+            "animation mixer declares TimeClip but has no End field",
+        ));
+    };
+    let Some(rate_id) = string_id_optional(&strings, "Rate") else {
+        return Err(animation_error(
+            "animation mixer declares TimeClip but has no Rate field",
+        ));
+    };
+
+    let mut time_clips = Vec::new();
+    for object_start in data_start..=bytes.len().saturating_sub(4) {
+        let mut cursor = object_start;
+        if read_u32_optional(bytes, &mut cursor) != Some(time_clip_id)
+            || read_u32_optional(bytes, &mut cursor) != Some(null_id)
+            || read_u32_optional(bytes, &mut cursor) != Some(0)
+        {
+            continue;
+        }
+        let Some(field_count) = read_u32_optional(bytes, &mut cursor) else {
+            continue;
+        };
+        if !(3..=64).contains(&field_count) {
+            continue;
+        }
+        let mut start = None;
+        let mut end = None;
+        let mut rate = None;
+        let mut valid = true;
+        for _ in 0..field_count {
+            let Some(field_id) = read_u32_optional(bytes, &mut cursor) else {
+                valid = false;
+                break;
+            };
+            let Some(field_type) = read_u32_optional(bytes, &mut cursor) else {
+                valid = false;
+                break;
+            };
+            if field_type != double_id {
+                valid = false;
+                break;
+            }
+            let Some(value_bits) = bytes
+                .get(cursor..cursor.saturating_add(8))
+                .and_then(|value| <[u8; 8]>::try_from(value).ok())
+            else {
+                valid = false;
+                break;
+            };
+            cursor += 8;
+            let value = f64::from_le_bytes(value_bits);
+            if read_u32_optional(bytes, &mut cursor) != Some(0)
+                || read_u32_optional(bytes, &mut cursor) != Some(0)
+            {
+                valid = false;
+                break;
+            }
+            if field_id == start_id {
+                start = Some(value);
+            } else if field_id == end_id {
+                end = Some(value);
+            } else if field_id == rate_id {
+                rate = Some(value);
+            }
+        }
+        if !valid {
+            continue;
+        }
+        let (Some(start), Some(end), Some(rate)) = (start, end, rate) else {
+            continue;
+        };
+        if !start.is_finite() || !end.is_finite() || !rate.is_finite() || start > end || rate <= 0.0
+        {
+            return Err(animation_error(
+                "animation TimeClip has invalid Start, End, or Rate",
+            ));
+        }
+        enforce_item_limit(
+            time_clips.len() as u64 + 1,
+            limits.max_animation_items(),
+            "animation TimeClip objects",
+        )?;
+        time_clips.push(LocatedAnimationTimeClip {
+            offset: object_start,
+            time_clip: AnimationTimeClip { start, end, rate },
+        });
+    }
+    if time_clips.is_empty() {
+        Err(animation_error(
+            "animation mixer declares TimeClip but its range could not be decoded",
+        ))
+    } else {
+        Ok(time_clips)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct LocatedAnimationCurve {
+    offset: usize,
+    curve: AnimationCurve,
+}
+
+fn parse_animation_curves_located(
+    bytes: &[u8],
+    limits: Limits,
+) -> Result<Vec<LocatedAnimationCurve>> {
     let (strings, data_start) = parse_string_table_with_data_start(bytes, limits)?;
     let Some(fcurve) = string_id_optional(&strings, "FCurve") else {
         return Ok(Vec::new());
@@ -5389,16 +5881,25 @@ fn parse_animation_curves(bytes: &[u8], limits: Limits) -> Result<Vec<AnimationC
             "animation mixer curves",
         )?;
         let mut cursor = header.cursor;
-        curves.push(parse_animation_curve_fields(
-            bytes,
-            &strings,
-            &mut cursor,
-            header.kind,
-            header.axis,
-            limits,
-        )?);
+        curves.push(LocatedAnimationCurve {
+            offset: start,
+            curve: parse_animation_curve_fields(
+                bytes,
+                &strings,
+                &mut cursor,
+                header.kind,
+                header.axis,
+                limits,
+            )?,
+        });
     }
     Ok(curves)
+}
+
+#[cfg(any(feature = "write", test))]
+fn parse_animation_curves(bytes: &[u8], limits: Limits) -> Result<Vec<AnimationCurve>> {
+    parse_animation_curves_located(bytes, limits)
+        .map(|curves| curves.into_iter().map(|located| located.curve).collect())
 }
 
 fn parse_secondary_animation_curves(
@@ -6231,6 +6732,122 @@ mod tests {
         bytes
     }
 
+    fn time_clip_binc(start: f64, end: f64, rate: f64) -> Vec<u8> {
+        let strings = ["null", "Double", "TimeClip", "Start", "End", "Rate"];
+        let mut bytes = b"cmt 0100binc\0\0\0\0".to_vec();
+        push_u32(&mut bytes, strings.len() as u32);
+        for value in strings {
+            bytes.push(value.len() as u8);
+            bytes.extend_from_slice(value.as_bytes());
+        }
+        for value in [2, 0, 0, 3] {
+            push_u32(&mut bytes, value);
+        }
+        for (field, value) in [(3, start), (4, end), (5, rate)] {
+            push_u32(&mut bytes, field);
+            push_u32(&mut bytes, 1);
+            bytes.extend_from_slice(&value.to_le_bytes());
+            push_u32(&mut bytes, 0);
+            push_u32(&mut bytes, 0);
+        }
+        bytes
+    }
+
+    fn segmented_cel_binc() -> Vec<u8> {
+        let strings = [
+            "null",
+            "ActionNodeClip",
+            "Name",
+            "first",
+            "TimeClip",
+            "Double",
+            "Start",
+            "End",
+            "Rate",
+            "FCurve",
+            "Type",
+            "ImageCelName",
+            "Frame",
+            "Single[]",
+            "Value",
+            "Tag",
+            "String[]",
+            "A",
+            "B",
+            "Interp",
+            "LeftSlope",
+            "RightSlope",
+            "ReviseConstant",
+            "Byte[]",
+            "Linear",
+            "second",
+            "C",
+            "D",
+        ];
+        let mut bytes = b"cmt 0100binc\0\0\0\0".to_vec();
+        push_u32(&mut bytes, strings.len() as u32);
+        for value in strings {
+            bytes.push(value.len() as u8);
+            bytes.extend_from_slice(value.as_bytes());
+        }
+
+        for (name, start, end, tags) in [
+            (3, 0.0_f64, 2.0_f64, [17, 18]),
+            (25, 4.0_f64, 6.0_f64, [26, 27]),
+        ] {
+            for value in [1, 0, 1, 2, name, 1, 4, 0, 0, 3] {
+                push_u32(&mut bytes, value);
+            }
+            for (field, value) in [(6, start), (7, end), (8, 60.0)] {
+                push_u32(&mut bytes, field);
+                push_u32(&mut bytes, 5);
+                bytes.extend_from_slice(&value.to_le_bytes());
+                push_u32(&mut bytes, 0);
+                push_u32(&mut bytes, 0);
+            }
+
+            for value in [9, 0, 1, 10, 11, 7] {
+                push_u32(&mut bytes, value);
+            }
+            for (field, values) in [(12, [0.0_f32, 1.0]), (14, [0.0_f32, 1.0])] {
+                push_u32(&mut bytes, field);
+                push_u32(&mut bytes, 13);
+                push_u32(&mut bytes, values.len() as u32);
+                for value in values {
+                    push_u32(&mut bytes, value.to_bits());
+                }
+                push_u32(&mut bytes, 0);
+                push_u32(&mut bytes, 0);
+            }
+            for (field, values) in [(15, tags), (19, [24, 24])] {
+                push_u32(&mut bytes, field);
+                push_u32(&mut bytes, 16);
+                push_u32(&mut bytes, values.len() as u32);
+                for value in values {
+                    push_u32(&mut bytes, value);
+                }
+                push_u32(&mut bytes, 0);
+                push_u32(&mut bytes, 0);
+            }
+            for field in [20, 21] {
+                push_u32(&mut bytes, field);
+                push_u32(&mut bytes, 13);
+                push_u32(&mut bytes, 2);
+                push_u32(&mut bytes, 0.0_f32.to_bits());
+                push_u32(&mut bytes, 0.0_f32.to_bits());
+                push_u32(&mut bytes, 0);
+                push_u32(&mut bytes, 0);
+            }
+            push_u32(&mut bytes, 22);
+            push_u32(&mut bytes, 23);
+            push_u32(&mut bytes, 2);
+            bytes.extend_from_slice(&[1, 0]);
+            push_u32(&mut bytes, 0);
+            push_u32(&mut bytes, 0);
+        }
+        bytes
+    }
+
     fn secondary_binc() -> Vec<u8> {
         let strings = [
             "FCurve",
@@ -6375,9 +6992,10 @@ mod tests {
                  );
                  INSERT INTO TimeLine VALUES (1, 2, NULL, 1, NULL, 24, 0, 24, 0);
                  CREATE TABLE AnimationCutBank (
-                    MainId INTEGER, FirstTimeLine INTEGER, Enable INTEGER
+                    MainId INTEGER, FirstTimeLine INTEGER, Enable INTEGER,
+                    CurrentIndex INTEGER
                  );
-                 INSERT INTO AnimationCutBank VALUES (1, 1, 1);
+                 INSERT INTO AnimationCutBank VALUES (1, 1, 1, 0);
                  CREATE TABLE Track (
                     MainId INTEGER, BankId INTEGER, TrackKind INTEGER,
                     TrackActionMixer BLOB, LayerUuidWithTrack BLOB,
@@ -6620,6 +7238,137 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn shared_bank_returns_only_the_selected_timeline_chain() {
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(&binc()).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let mut body = Vec::new();
+        body.extend_from_slice(&(compressed.len() as u32).to_le_bytes());
+        body.extend_from_slice(&compressed);
+        let (bytes, offset) = sample(&body);
+        let database = animation_database(offset);
+        database
+            .connection()
+            .execute_batch(
+                "UPDATE AnimationCutBank SET CurrentIndex = 1;
+                 UPDATE TimeLine SET NextTimeLine = 2 WHERE MainId = 1;
+                 INSERT INTO TimeLine VALUES (2, 2, 0, 2, NULL, 24, 0, 24, 0);
+                 INSERT INTO Track VALUES (2, 2, 1000, NULL, NULL, NULL, NULL, 0);",
+            )
+            .unwrap();
+
+        let mut clip = ClipFile::open(Cursor::new(bytes)).unwrap();
+        let preferred = clip
+            .read_animation(&database, Limits::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(preferred.timeline().id(), 2);
+        assert_eq!(
+            preferred
+                .animation_tracks()
+                .iter()
+                .map(AnimationTrack::id)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+
+        let first = clip
+            .read_animation_for_timeline(&database, 1, Limits::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.timeline().id(), 1);
+        assert_eq!(
+            first
+                .animation_tracks()
+                .iter()
+                .map(AnimationTrack::id)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn time_clip_is_half_open_and_cel_lookup_is_blank_outside_it() {
+        let time_clip =
+            parse_animation_time_clips_located(&time_clip_binc(2.5, 7.5, 60.0), Limits::default())
+                .unwrap()[0]
+                .time_clip;
+        assert_eq!(time_clip.start(), 2.5);
+        assert_eq!(time_clip.end(), 7.5);
+        assert_eq!(time_clip.rate(), 60.0);
+        assert!(!time_clip.contains_display_frame(0.0, 24.0));
+        assert!(time_clip.contains_display_frame(1.0, 24.0));
+        assert!(time_clip.contains_display_frame(2.0, 24.0));
+        assert!(!time_clip.contains_display_frame(3.0, 24.0));
+        assert_eq!(time_clip.local_time_60hz(1.0, 24.0), Some(0.0));
+        assert_eq!(time_clip.local_time_60hz(2.0, 24.0), Some(2.5));
+        assert_eq!(time_clip.local_time_60hz(3.0, 24.0), None);
+
+        let keyframes = vec![
+            CelKeyframe {
+                time_60hz: 0.0,
+                value: 0.0,
+                tag: "A".to_owned(),
+            },
+            CelKeyframe {
+                time_60hz: 2.5,
+                value: 1.0,
+                tag: "B".to_owned(),
+            },
+        ];
+        let track = CelTrack {
+            id: 1,
+            layer_id: 5,
+            keyframes: keyframes.clone(),
+            segments: vec![CelTrackSegment {
+                time_clip: Some(time_clip),
+                keyframes,
+            }],
+        };
+        assert_eq!(track.cel_at_frame(0.0, 24.0), None);
+        assert_eq!(track.cel_at_frame(1.0, 24.0), Some("A"));
+        assert_eq!(track.cel_at_frame(2.0, 24.0), Some("B"));
+        assert_eq!(track.cel_at_frame(3.0, 24.0), None);
+    }
+
+    #[test]
+    fn discontinuous_action_clips_keep_later_cel_segments() {
+        let mixer = segmented_cel_binc();
+        let curves = parse_animation_curves_located(&mixer, Limits::default()).unwrap();
+        let time_clips = parse_animation_time_clips_located(&mixer, Limits::default()).unwrap();
+        let action_clips = parse_animation_action_clip_offsets(&mixer, Limits::default()).unwrap();
+        assert_eq!(curves.len(), 2);
+        assert_eq!(time_clips.len(), 2);
+        assert_eq!(action_clips.len(), 2);
+
+        let segments = build_cel_track_segments(1, &curves, &time_clips, &action_clips).unwrap();
+        let keyframes = segments
+            .iter()
+            .flat_map(|segment| segment.keyframes.iter().cloned())
+            .collect();
+        let track = CelTrack {
+            id: 1,
+            layer_id: 5,
+            keyframes,
+            segments,
+        };
+        assert_eq!(track.segments().len(), 2);
+        assert_eq!(track.cel_at_frame(0.0, 60.0), Some("A"));
+        assert_eq!(track.cel_at_frame(1.0, 60.0), Some("B"));
+        assert_eq!(track.cel_at_frame(2.0, 60.0), None);
+        assert_eq!(track.cel_at_frame(3.0, 60.0), None);
+        assert_eq!(track.cel_at_frame(4.0, 60.0), Some("C"));
+        assert_eq!(track.cel_at_frame(5.0, 60.0), Some("D"));
+        assert_eq!(track.cel_at_frame(6.0, 60.0), None);
+    }
+
+    #[test]
+    fn image_cel_track_without_a_curve_is_empty() {
+        let segments = build_cel_track_segments(175, &[], &[], &[]).unwrap();
+        assert!(segments.is_empty());
     }
 
     #[cfg(feature = "write")]
@@ -7675,7 +8424,7 @@ mod tests {
     }
 
     #[test]
-    fn validates_the_timeline_track_chain() {
+    fn selects_and_validates_the_timeline_track_chain() {
         let source = |id, next_track_id| AnimationTrackSource {
             id,
             kind: 1000,
@@ -7685,18 +8434,129 @@ mod tests {
             value_map: None,
             layer_uuid: None,
         };
-        let valid = [source(1, Some(2)), source(2, None)];
-        validate_track_chain(&valid, 1).unwrap();
+        let shared_bank = [
+            source(1, Some(2)),
+            source(2, None),
+            source(3, Some(4)),
+            source(4, None),
+        ];
+        assert_eq!(
+            validate_track_chain(&shared_bank, 1)
+                .unwrap()
+                .into_keys()
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(
+            validate_track_chain(&shared_bank, 3)
+                .unwrap()
+                .into_keys()
+                .collect::<Vec<_>>(),
+            vec![3, 4]
+        );
 
         let cycle = [source(1, Some(2)), source(2, Some(1))];
         assert!(matches!(
             validate_track_chain(&cycle, 1),
             Err(Error::InvalidAnimation { .. })
         ));
+        let missing = [source(1, Some(2))];
         assert!(matches!(
-            validate_track_chain(&valid, 2),
+            validate_track_chain(&missing, 1),
             Err(Error::InvalidAnimation { .. })
         ));
+        let duplicate = [source(1, None), source(1, None)];
+        assert!(matches!(
+            validate_track_chain(&duplicate, 1),
+            Err(Error::InvalidAnimation { .. })
+        ));
+    }
+
+    #[test]
+    fn selected_timeline_follows_links_and_validates_the_complete_chain() {
+        let timeline = |id, bank_id, next_timeline_id| Timeline {
+            id,
+            bank_id,
+            next_timeline_id,
+            first_track_id: None,
+            name: None,
+            frame_rate: 24.0,
+            start_frame: 0.0,
+            end_frame: 1.0,
+            current_frame: None,
+        };
+        let linked_out_of_id_order = [
+            timeline(1, 7, Some(3)),
+            timeline(2, 7, None),
+            timeline(3, 7, Some(2)),
+        ];
+        assert_eq!(
+            selected_timeline_id(&linked_out_of_id_order, 1, 0).unwrap(),
+            1
+        );
+        assert_eq!(
+            selected_timeline_id(&linked_out_of_id_order, 1, 1).unwrap(),
+            3
+        );
+        assert_eq!(
+            selected_timeline_id(&linked_out_of_id_order, 1, 2).unwrap(),
+            2
+        );
+        assert!(matches!(
+            selected_timeline_id(&linked_out_of_id_order, 1, -1),
+            Err(Error::InvalidAnimation { .. })
+        ));
+        assert!(matches!(
+            selected_timeline_id(&linked_out_of_id_order, 1, 3),
+            Err(Error::InvalidAnimation { .. })
+        ));
+
+        let cyclic = [timeline(1, 7, Some(2)), timeline(2, 7, Some(1))];
+        assert!(matches!(
+            selected_timeline_id(&cyclic, 1, 0),
+            Err(Error::InvalidAnimation { .. })
+        ));
+        let missing = [timeline(1, 7, Some(9)), timeline(2, 7, None)];
+        assert!(matches!(
+            selected_timeline_id(&missing, 1, 0),
+            Err(Error::InvalidAnimation { .. })
+        ));
+        let crossed_bank = [timeline(1, 7, Some(2)), timeline(2, 8, None)];
+        assert!(matches!(
+            selected_timeline_id(&crossed_bank, 1, 0),
+            Err(Error::InvalidAnimation { .. })
+        ));
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn clone_timeline_chain_ignores_other_chains_in_the_shared_bank() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE TimeLine (MainId INTEGER, BankId INTEGER, FirstTrack INTEGER);
+                 INSERT INTO TimeLine VALUES (1, 2, 1), (2, 2, 3), (3, 2, 0);
+                 CREATE TABLE Track (
+                    MainId INTEGER,
+                    BankId INTEGER,
+                    TrackNextIndex INTEGER
+                 );
+                 INSERT INTO Track VALUES (1, 2, 2), (2, 2, 0), (3, 2, 4), (4, 2, 0);",
+            )
+            .unwrap();
+
+        assert_eq!(
+            animation_clone_timeline_chain(&connection, 1, Limits::default()).unwrap(),
+            (2, Some(2), 2)
+        );
+        assert_eq!(
+            animation_clone_timeline_chain(&connection, 2, Limits::default()).unwrap(),
+            (2, Some(4), 2)
+        );
+        assert_eq!(
+            animation_clone_timeline_chain(&connection, 3, Limits::default()).unwrap(),
+            (2, None, 0)
+        );
     }
 
     #[test]
