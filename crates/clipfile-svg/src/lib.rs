@@ -801,6 +801,7 @@ pub struct SvgGroupOptions {
     opacity: f64,
     id: Option<String>,
     title: Option<String>,
+    transform: Option<[f64; 6]>,
 }
 
 impl Default for SvgGroupOptions {
@@ -809,6 +810,7 @@ impl Default for SvgGroupOptions {
             opacity: 1.0,
             id: None,
             title: None,
+            transform: None,
         }
     }
 }
@@ -835,6 +837,15 @@ impl SvgGroupOptions {
         self
     }
 
+    /// Applies an SVG affine matrix to the group.
+    ///
+    /// Values use SVG's `matrix(a b c d e f)` order.
+    #[must_use]
+    pub const fn with_transform_matrix(mut self, matrix: [f64; 6]) -> Self {
+        self.transform = Some(matrix);
+        self
+    }
+
     /// Group opacity in the inclusive range `0.0..=1.0`.
     #[must_use]
     pub const fn opacity(&self) -> f64 {
@@ -851,6 +862,12 @@ impl SvgGroupOptions {
     #[must_use]
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
+    }
+
+    /// Optional SVG affine matrix in `matrix(a b c d e f)` order.
+    #[must_use]
+    pub const fn transform_matrix(&self) -> Option<[f64; 6]> {
+        self.transform
     }
 }
 
@@ -964,6 +981,20 @@ impl<W: Write> SvgWriter<W> {
         group.push_attribute(("opacity", opacity.as_str()));
         if let Some(id) = options.id() {
             group.push_attribute(("id", id));
+        }
+        let transform = options.transform_matrix().map(|matrix| {
+            format!(
+                "matrix({} {} {} {} {} {})",
+                svg_number(matrix[0]),
+                svg_number(matrix[1]),
+                svg_number(matrix[2]),
+                svg_number(matrix[3]),
+                svg_number(matrix[4]),
+                svg_number(matrix[5]),
+            )
+        });
+        if let Some(transform) = &transform {
+            group.push_attribute(("transform", transform.as_str()));
         }
         self.writer
             .write_event(Event::Start(group))
@@ -1369,6 +1400,14 @@ fn validate_group_options(options: &SvgGroupOptions) -> Result<()> {
         id.is_empty() || id.chars().any(char::is_whitespace) || !is_valid_xml_text(id)
     }) {
         return Err(Error::InvalidGroupId);
+    }
+    if let Some(matrix) = options.transform_matrix()
+        && let Some(value) = matrix.into_iter().find(|value| !value.is_finite())
+    {
+        return Err(Error::InvalidSvgNumber {
+            field: "group transform",
+            value,
+        });
     }
     Ok(())
 }
@@ -3488,7 +3527,8 @@ mod tests {
                 SvgGroupOptions::default()
                     .with_opacity(0.5)
                     .with_id("line-layer")
-                    .with_title("line < rough"),
+                    .with_title("line < rough")
+                    .with_transform_matrix([1.0, 0.25, -0.5, 2.0, 12.0, -3.5]),
                 |_| Ok::<(), Error>(()),
             )
             .unwrap();
@@ -3498,7 +3538,9 @@ mod tests {
         ));
         let (output, _) = writer.finish().unwrap();
         let xml = String::from_utf8(output.into_inner()).unwrap();
-        assert!(xml.contains("<g opacity=\"0.5\" id=\"line-layer\">"));
+        assert!(xml.contains(
+            "<g opacity=\"0.5\" id=\"line-layer\" transform=\"matrix(1 0.25 -0.5 2 12 -3.5)\">"
+        ));
         assert!(xml.contains("<title>line &lt; rough</title>"));
         assert_well_formed(&xml);
 
@@ -3514,6 +3556,19 @@ mod tests {
             }),
             Err(Error::InvalidGroupId)
         ));
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(matches!(
+                invalid_writer.write_group(
+                    SvgGroupOptions::default()
+                        .with_transform_matrix([1.0, 0.0, 0.0, value, 0.0, 0.0]),
+                    |_| Ok::<(), Error>(()),
+                ),
+                Err(Error::InvalidSvgNumber {
+                    field: "group transform",
+                    value: rejected,
+                }) if rejected.to_bits() == value.to_bits()
+            ));
+        }
     }
 
     #[test]
