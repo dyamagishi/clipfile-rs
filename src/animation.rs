@@ -4894,13 +4894,23 @@ fn animation_track_sources(
         });
     }
     let has_track_chain = database.schema().has_column("Track", "TrackNextIndex");
-    if let Some(first_track_id) = timeline.first_track_id.filter(|_| has_track_chain) {
-        validate_track_chain(&sources, first_track_id)?;
+    if has_track_chain && database.schema().has_column("TimeLine", "FirstTrack") {
+        // A bank can contain several timelines with independent track chains.
+        // Only the selected timeline's chain belongs to this animation.
+        if let Some(first_track_id) = timeline.first_track_id {
+            let selected = track_chain_ids(&sources, first_track_id)?;
+            sources.retain(|source| selected.contains_key(&source.id));
+        } else {
+            sources.clear();
+        }
     }
     Ok(sources)
 }
 
-fn validate_track_chain(sources: &[AnimationTrackSource], first_track_id: i64) -> Result<()> {
+fn track_chain_ids(
+    sources: &[AnimationTrackSource],
+    first_track_id: i64,
+) -> Result<BTreeMap<i64, ()>> {
     let by_id = sources
         .iter()
         .map(|source| (source.id, source.next_track_id))
@@ -4920,12 +4930,7 @@ fn validate_track_chain(sources: &[AnimationTrackSource], first_track_id: i64) -
             .get(&id)
             .ok_or_else(|| animation_error(format!("timeline track {id} is missing")))?;
     }
-    if visited.len() != sources.len() {
-        return Err(animation_error(
-            "timeline track chain contains unreachable tracks",
-        ));
-    }
-    Ok(())
+    Ok(visited)
 }
 
 fn nonzero_track_id(value: Option<i64>) -> Option<i64> {
@@ -7686,17 +7691,87 @@ mod tests {
             layer_uuid: None,
         };
         let valid = [source(1, Some(2)), source(2, None)];
-        validate_track_chain(&valid, 1).unwrap();
+        assert_eq!(track_chain_ids(&valid, 1).unwrap().len(), 2);
 
         let cycle = [source(1, Some(2)), source(2, Some(1))];
         assert!(matches!(
-            validate_track_chain(&cycle, 1),
+            track_chain_ids(&cycle, 1),
             Err(Error::InvalidAnimation { .. })
         ));
+        assert_eq!(track_chain_ids(&valid, 2).unwrap().len(), 1);
         assert!(matches!(
-            validate_track_chain(&valid, 2),
+            track_chain_ids(&valid, 3),
             Err(Error::InvalidAnimation { .. })
         ));
+        let duplicate = [source(1, None), source(1, None)];
+        assert!(matches!(
+            track_chain_ids(&duplicate, 1),
+            Err(Error::InvalidAnimation { .. })
+        ));
+    }
+
+    #[test]
+    fn reads_only_the_selected_timeline_track_chain() {
+        let database = animation_database(0);
+        database.connection().execute_batch(
+            "UPDATE Track SET TrackActionMixer = NULL, TrackActionMixer2 = NULL, TrackKind = 1000;
+             UPDATE TimeLine SET NextTimeLine = 3;
+             INSERT INTO TimeLine VALUES (3, 2, 0, 5, 'second', 24, 0, 24, 0);
+             INSERT INTO TimeLine VALUES (4, 2, 0, 0, 'empty', 24, 0, 24, 0);
+             INSERT INTO Track (MainId, BankId, TrackKind, TrackNextIndex)
+                VALUES (5, 2, 1000, 6), (6, 2, 1000, 0);",
+        ).unwrap();
+        let (bytes, _) = sample(b"");
+        let mut clip = ClipFile::open(Cursor::new(bytes)).unwrap();
+        for (timeline_id, expected_ids) in [(1, vec![1]), (3, vec![5, 6]), (4, vec![])] {
+            let animation = clip
+                .read_animation_for_timeline(&database, timeline_id, Limits::default())
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                animation
+                    .animation_tracks()
+                    .iter()
+                    .map(AnimationTrack::id)
+                    .collect::<Vec<_>>(),
+                expected_ids
+            );
+        }
+        let timeline = database.timelines(Limits::default()).unwrap().remove(1);
+        assert!(matches!(
+            animation_track_sources(
+                &database,
+                &timeline,
+                Limits::default().with_max_animation_items(2)
+            ),
+            Err(Error::LimitExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_selected_timeline_track_links() {
+        for invalid_sql in [
+            "UPDATE Track SET TrackNextIndex = 1",
+            "UPDATE Track SET TrackNextIndex = 999",
+            "INSERT INTO Track (MainId, BankId, TrackKind, TrackNextIndex) VALUES (1, 2, 1000, 0)",
+            "UPDATE Track SET TrackNextIndex = 5;
+             INSERT INTO Track (MainId, BankId, TrackKind, TrackNextIndex) VALUES (5, 3, 1000, 0)",
+        ] {
+            let database = animation_database(0);
+            database.connection().execute_batch(
+                "UPDATE Track SET TrackActionMixer = NULL, TrackActionMixer2 = NULL, TrackKind = 1000;",
+            ).unwrap();
+            database.connection().execute_batch(invalid_sql).unwrap();
+            let (bytes, _) = sample(b"");
+            let mut clip = ClipFile::open(Cursor::new(bytes)).unwrap();
+            assert!(
+                matches!(
+                    clip.read_animation(&database, Limits::default()),
+                    Err(Error::InvalidAnimation { .. })
+                ),
+                "accepted invalid links: {invalid_sql}"
+            );
+        }
     }
 
     #[test]
