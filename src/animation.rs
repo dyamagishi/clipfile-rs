@@ -950,13 +950,17 @@ impl CelTrack {
         self.layer_id
     }
 
-    /// Sorted cel-selection keys.
+    /// Sorted cel-selection keys, or an empty slice when no `ImageCelName`
+    /// curve is stored. Inline saved values remain on [`AnimationTrack::values`].
     #[must_use]
     pub fn keyframes(&self) -> &[CelKeyframe] {
         &self.keyframes
     }
 
     /// Returns the active cel tag at a display-frame position.
+    ///
+    /// Returns `None` when no selection keys are stored; an inline saved value
+    /// is not assumed to apply throughout the timeline.
     #[must_use]
     pub fn cel_at_frame(&self, display_frame: f64, frame_rate: f64) -> Option<&str> {
         if !display_frame.is_finite() || !frame_rate.is_finite() || frame_rate <= 0.0 {
@@ -1732,31 +1736,27 @@ impl<R: Read + Seek> ClipFile<R> {
                 let layer_id = layer_id.ok_or_else(|| {
                     animation_error(format!("cel track {} has no layer UUID", source.id))
                 })?;
-                let curve = curves
-                    .iter()
-                    .find(|curve| curve.kind == "ImageCelName")
-                    .ok_or_else(|| {
-                        animation_error(format!(
-                            "cel track {} mixer has no ImageCelName curve",
-                            source.id
-                        ))
-                    })?;
-                let keyframes = curve
-                    .keyframes
-                    .iter()
-                    .map(|key| {
-                        Ok(CelKeyframe {
-                            time_60hz: key.time_60hz,
-                            value: key.value,
-                            tag: key.tag.clone().ok_or_else(|| {
-                                animation_error(format!(
-                                    "cel track {} ImageCelName key has no tag",
-                                    source.id
-                                ))
-                            })?,
-                        })
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                let keyframes =
+                    if let Some(curve) = curves.iter().find(|curve| curve.kind == "ImageCelName") {
+                        curve
+                            .keyframes
+                            .iter()
+                            .map(|key| {
+                                Ok(CelKeyframe {
+                                    time_60hz: key.time_60hz,
+                                    value: key.value,
+                                    tag: key.tag.clone().ok_or_else(|| {
+                                        animation_error(format!(
+                                            "cel track {} ImageCelName key has no tag",
+                                            source.id
+                                        ))
+                                    })?,
+                                })
+                            })
+                            .collect::<Result<Vec<_>>>()?
+                    } else {
+                        Vec::new()
+                    };
                 tracks.push(CelTrack {
                     id: source.id,
                     layer_id,
@@ -6625,6 +6625,101 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn reads_image_cel_tracks_without_selection_curves() {
+        let mut empty_mixer = Vec::from(b"cmt 0100binc".as_slice());
+        empty_mixer.extend_from_slice(&[0; 8]);
+        for (mixer, has_position_curve) in [(empty_mixer, false), (axis_binc(), true)] {
+            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+            encoder.write_all(&mixer).unwrap();
+            let compressed = encoder.finish().unwrap();
+            let mut body = (compressed.len() as u32).to_le_bytes().to_vec();
+            body.extend_from_slice(&compressed);
+            let (bytes, offset) = sample(&body);
+            let database = animation_database(offset);
+            database
+                .connection()
+                .execute_batch("UPDATE Track SET TrackActionMixer2 = NULL, TrackValueMap = NULL")
+                .unwrap();
+            let mut clip = ClipFile::open(Cursor::new(bytes)).unwrap();
+            for has_saved_value in [false, true] {
+                if has_saved_value {
+                    database
+                        .connection()
+                        .execute(
+                            "UPDATE Track SET TrackValueMap = ?1",
+                            params![track_value_map()],
+                        )
+                        .unwrap();
+                }
+                let animation = clip
+                    .read_animation(&database, Limits::default())
+                    .unwrap()
+                    .unwrap();
+                let cel = animation.track_for_layer(5).unwrap();
+                assert!(cel.keyframes().is_empty());
+                assert_eq!(cel.cel_at_frame(0.0, 24.0), None);
+                assert_eq!(cel.cel_at_frame(24.0, 24.0), None);
+                let track = &animation.animation_tracks()[0];
+                assert!(track.kind().is_image_cel());
+                assert_eq!(track.layer_id(), Some(5));
+                if has_position_curve {
+                    assert_eq!(track.curves().len(), 1);
+                    assert_eq!(track.curves()[0].kind(), "ImagePosition");
+                    assert_eq!(track.curves()[0].axis(), Some("X"));
+                    assert_eq!(track.curves()[0].keyframes()[0].value(), 447.0);
+                } else {
+                    assert!(track.curves().is_empty());
+                }
+                assert_eq!(track.value_map_present(), has_saved_value);
+                if has_saved_value {
+                    assert_eq!(
+                        track.values()[0].value(),
+                        &AnimationTrackValue::IndexedText {
+                            text: "A".to_owned(),
+                            numeric_value: 0,
+                        }
+                    );
+                } else {
+                    assert!(track.values().is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn empty_image_cel_track_does_not_hide_other_cel_selections() {
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(&binc()).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let mut body = (compressed.len() as u32).to_le_bytes().to_vec();
+        body.extend_from_slice(&compressed);
+        let (bytes, offset) = sample(&body);
+        let database = animation_database(offset);
+        database
+            .connection()
+            .execute_batch(
+                "UPDATE Track SET TrackNextIndex = 2;
+             INSERT INTO Layer VALUES (6, '22222222-2222-2222-2222-222222222222');
+             INSERT INTO Track (MainId, BankId, TrackKind, LayerUuidWithTrack, TrackNextIndex)
+                VALUES (2, 2, 2000, '22222222-2222-2222-2222-222222222222', 0);",
+            )
+            .unwrap();
+        let mut clip = ClipFile::open(Cursor::new(bytes)).unwrap();
+        let animation = clip
+            .read_animation(&database, Limits::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(animation.animation_tracks().len(), 2);
+        assert_eq!(animation.tracks().len(), 2);
+        let normal = animation.track_for_layer(5).unwrap();
+        assert_eq!(normal.cel_at_frame(0.0, 24.0), Some("A"));
+        assert_eq!(normal.cel_at_frame(24.0, 24.0), Some("B"));
+        let empty = animation.track_for_layer(6).unwrap();
+        assert!(empty.keyframes().is_empty());
+        assert_eq!(empty.cel_at_frame(0.0, 24.0), None);
     }
 
     #[cfg(feature = "write")]

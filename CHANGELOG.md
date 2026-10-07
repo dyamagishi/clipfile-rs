@@ -12,6 +12,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Animation reading now selects tracks through the requested timeline's
   `FirstTrack` chain instead of requiring every track in its bank to belong to
   that timeline. Independent timelines sharing a bank no longer fail validation.
+- Image-cel tracks without an `ImageCelName` curve now remain readable with
+  empty selection keys. Other curves and inline saved values are preserved
+  without inventing a timeline-wide cel selection.
 
 ## [clipfile-svg 0.1.1] - 2026-08-04
 
