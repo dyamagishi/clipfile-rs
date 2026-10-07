@@ -16,6 +16,7 @@
 | [`inspect_vector.rs`](inspect_vector.rs) | `sqlite` | 1レイヤーのvector geometry・styleとraw fallbackを読む | なし |
 | [`export_vector_svg.rs`](../crates/clipfile-svg/examples/export_vector_svg.rs) | `clipfile-svg` package | 1レイヤーのvector strokeをloss report付きでSVGへ逐次変換 | 新規SVG |
 | [`export_raster.rs`](export_raster.rs) | `image` | 1レイヤーの全tileをRGBA/Gray画像へ組み立てPNGへ変換する | 新規PNG |
+| [`build_raster.rs`](build_raster.rs) | `build` | PNG・ディレクトリ・位置/階層metadataからテンプレートなしで文書を生成する | 新規CLIP |
 | [`inspect_animation.rs`](inspect_animation.rs) | `animation` | timeline、track、FCurve、cel選択を読む | なし |
 | [`inspect_timelapse.rs`](inspect_timelapse.rs) | `timelapse` | manager/record/blob chainと内部frame indexをstream検証 | なし |
 | [`rewrite.rs`](rewrite.rs) | `write` | 編集なしのvalidated container rewriteを行う | 新規CLIP |
@@ -39,6 +40,8 @@
 `layer-id` と `canvas-id` は [`inspect_document`](inspect_document.rs) で確認できる。
 
 ## 基本・総合診断
+
+新規ラスター文書の生成手順と入力metadataは [building guide](../docs/building.md) を参照。
 
 最初は、依存featureなしでcontainerを検証する。
 

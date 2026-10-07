@@ -970,7 +970,7 @@ pub(crate) fn rebuild_block_data_body_batch(
 }
 
 #[cfg(feature = "write")]
-fn csp_block_checksum(compressed: &[u8]) -> Result<u32> {
+pub(crate) fn csp_block_checksum(compressed: &[u8]) -> Result<u32> {
     const MOD_ADLER: u32 = 65_521;
 
     let compressed_size = u32::try_from(compressed.len()).map_err(|_| Error::InvalidWrite {

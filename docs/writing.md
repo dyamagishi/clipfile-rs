@@ -1,5 +1,8 @@
 # `.clip` の書き込み
 
+既存ファイルなしでラスター文書を新規生成する場合は、`build` feature の
+`RasterDocumentBuilder` を使う。[新規生成ガイド](building.md) を参照。
+
 `write` featureは、既存の`.clip`を検証してから別の新規ファイルへ再構築するAPIを提供する。既定featureには含まれない。意味が確認済みの領域には型付きoperationを用意し、未知列の調査や高度な相互運用向けには低レベルescape hatchも残す。
 
 ```toml

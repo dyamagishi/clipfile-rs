@@ -146,6 +146,15 @@ secondary mixerで実値を持つ倍精度FCurveは可変metadata headerを含�
 
 `BlockCheckSum`は、4-byte little-endian圧縮長とzlib payloadを連結した範囲のAdler-32である。匿名ローカル106ファイルの非0チェックサム54,649件で全件一致した。writerは`BlockChecksumMode::CspCompatible`でこの値を生成し、変更しないブロックは元の値を保存する。全0でも開けた互換観測は、従来の`Zero`明示modeとしてのみ残す。
 
+### 9. `build` — ラスター文書の新規生成
+
+`RasterDocumentBuilder` は `clip-file` の Python builder で検証した初期schema・
+row既定値・cache構造を基に、既存ファイルなしで通常RGBAレイヤー、位置、opacity、
+入れ子folder、thumbnail、previewを生成する。raster encoderとCSP互換checksumは既存処理を共有する。
+PNG・directory・legacy/v2 metadataの読込はexampleへ分離し、coreは型付き画像を受け取る。
+生成範囲、根拠、独立したPython実装との10ケース比較は [building guide](building.md) を参照。
+任意のtext/vector/animation objectのゼロ生成は別途未実装である。
+
 ## エラーと制限値
 
 公開パーサーには設定可能な `Limits` を追加する。

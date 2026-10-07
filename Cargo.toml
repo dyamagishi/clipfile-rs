@@ -31,6 +31,11 @@ image = ["raster", "dep:image"]
 animation = ["sqlite", "dep:flate2"]
 timelapse = ["sqlite", "dep:flate2"]
 write = ["sqlite", "dep:flate2"]
+build = ["write", "image"]
+
+[dev-dependencies]
+glob = "0.3"
+serde_json = { version = "1", features = ["preserve_order"] }
 
 [package.metadata.docs.rs]
 all-features = true
@@ -38,6 +43,10 @@ all-features = true
 [[example]]
 name = "inspect_cmc"
 required-features = ["sqlite"]
+
+[[example]]
+name = "build_raster"
+required-features = ["build"]
 
 [[example]]
 name = "inspect_corrections"

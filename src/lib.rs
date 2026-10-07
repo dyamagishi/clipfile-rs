@@ -10,6 +10,8 @@
 
 #[cfg(feature = "animation")]
 mod animation;
+#[cfg(feature = "build")]
+mod builder;
 #[cfg(feature = "sqlite")]
 mod cmc;
 mod container;
@@ -49,6 +51,8 @@ pub use animation::{
     AnimationCurveKeyframeInsert, AnimationTrackCloneSummary, AnimationTrackRemovalSummary,
     ImageCelTrackCloneOptions, ImageCelTrackKeyframe,
 };
+#[cfg(feature = "build")]
+pub use builder::{RasterDocumentBuilder, RasterLayerOptions};
 #[cfg(feature = "sqlite")]
 pub use cmc::{CmcFile, CmcNode};
 pub use container::{

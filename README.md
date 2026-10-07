@@ -47,13 +47,15 @@ Implemented:
   byte-preserving external bodies, repaired absolute offsets, CSP-compatible
   block checksums, plain-raster-layer template cloning, text-object lifecycle,
   vector-stroke clone/removal, and conservative animation key/track lifecycle.
+- opt-in template-free raster document creation with positioned layers, nested
+  folders, opacity, thumbnails, and PNG previews (unreleased `build` feature).
 
 Not implemented yet:
 
 - full-fidelity vector-brush rendering, semantic text-attribute decoding, 3D
   data, or time-lapse playback/timestamp semantics; and
-- template-free arbitrary object creation and full-fidelity style, brush,
-  raster-cache, and animation-metadata encoders.
+- template-free arbitrary vector/text/animation object creation and full-fidelity
+  style, brush, raster-cache, and animation-metadata encoders.
 
 See [the format analysis](docs/format-analysis.md) and
 [the implementation plan](docs/implementation-plan.md) for the research status
@@ -63,6 +65,9 @@ lossless geometry/style boundary. The workspace's separate `clipfile-svg`
 crate provides loss-aware streaming SVG output without coupling SVG types to
 the core format model. Unresolved details are tracked in [the open-questions
 log](docs/open-questions.md).
+
+[The raster building guide](docs/building.md) covers template-free document
+creation and the clip-file interoperability checks.
 
 ## Installation
 

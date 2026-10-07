@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Optional `build` feature and `RasterDocumentBuilder` for template-free RGBA
+  documents with positioned raster layers, opacity, nested folders, mipmap
+  metadata, thumbnails, and generated or explicit PNG previews.
+- PNG/directory `build_raster` example supporting clip-file legacy/version-2
+  metadata, canvas sizing, name/natural ordering, and glob filtering.
+- Synthetic builder regressions and an optional independent Python-builder
+  interoperability oracle covering ten generation cases.
+
 ### Fixed
 
 - Animation reading now selects tracks through the requested timeline's
